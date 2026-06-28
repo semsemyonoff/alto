@@ -1,0 +1,137 @@
+{{define "base"}}<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ALTO – Audio Library Transcode Organizer</title>
+  <link rel="icon" href="/static/logo.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/css/style.css">
+  <script src="/static/js/htmx.min.js" defer></script>
+  <script src="/static/js/layout.js" defer></script>
+</head>
+<body>
+<div class="app-shell">
+
+  <header class="app-header">
+    <a class="app-brand" href="/" aria-label="Audio Library Transcode Organizer home">
+      <img class="app-logo" src="/static/logo.svg" alt="ALTO logo">
+      <span class="app-title">Audio Library Transcode Organizer</span>
+    </a>
+    <span class="header-spacer"></span>
+    <span id="scan-indicator" class="scan-status" style="display:none">
+      <span id="scan-spinner" class="spinner" aria-hidden="true"></span>
+      <span id="scan-text">Scanning…</span>
+    </span>
+    <button class="btn btn-ghost"
+            id="scan-btn"
+            onclick="altoTriggerScan()"
+            title="Re-index all libraries">
+      ↻ Re-index
+    </button>
+  </header>
+
+  <aside class="app-sidebar" id="app-sidebar">
+    {{template "sidebar" .}}
+  </aside>
+
+  <div class="app-sidebar-resizer"
+       role="separator"
+       aria-controls="app-sidebar"
+       aria-label="Resize sidebar"
+       aria-orientation="vertical"
+       tabindex="0"></div>
+
+  <main class="app-content" id="content-area">
+    {{if .Notice}}
+    <div class="app-notice" role="status">{{.Notice}}</div>
+    {{end}}
+    {{template "content" .}}
+  </main>
+
+</div>
+
+<script>(function(){
+  var scanIndic = document.getElementById('scan-indicator');
+  var scanSpinner = document.getElementById('scan-spinner');
+  var scanText = document.getElementById('scan-text');
+  var _scanES = null;
+  var _scanMsgTimer = null;
+
+  function showScanStatus(message, state, autoHideMs) {
+    if (!scanIndic) return;
+    if (_scanMsgTimer) { clearTimeout(_scanMsgTimer); _scanMsgTimer = null; }
+    scanIndic.style.display = '';
+    scanIndic.classList.remove('running', 'success', 'error');
+    if (state) scanIndic.classList.add(state);
+    if (scanSpinner) scanSpinner.style.display = state === 'running' ? '' : 'none';
+    if (scanText) scanText.textContent = message || 'Scanning…';
+    if (autoHideMs) {
+      _scanMsgTimer = setTimeout(function() {
+        if (scanIndic) scanIndic.style.display = 'none';
+      }, autoHideMs);
+    }
+  }
+
+  function hideScanIndic() {
+    if (_scanMsgTimer) { clearTimeout(_scanMsgTimer); _scanMsgTimer = null; }
+    if (scanIndic) scanIndic.style.display = 'none';
+  }
+
+  function refreshTree() {
+    var sel = document.getElementById('library-select');
+    if (sel && typeof htmx !== 'undefined') {
+      htmx.ajax('GET', '/api/tree/' + sel.value + '/children', {target: '#tree-root', swap: 'innerHTML'});
+    }
+  }
+
+  function startScanSSE() {
+    if (_scanES) { _scanES.close(); }
+    showScanStatus('Scanning…', 'running');
+    _scanES = new EventSource('/api/scan/status');
+    _scanES.addEventListener('idle', function() {
+      _scanES.close(); _scanES = null; hideScanIndic(); refreshTree();
+    });
+    _scanES.addEventListener('complete', function(event) {
+      var payload = {};
+      try { payload = JSON.parse(event.data || '{}'); } catch (_) {}
+      _scanES.close(); _scanES = null;
+      showScanStatus(payload.message || 'Re-index complete.', 'success', 6000);
+      refreshTree();
+    });
+    _scanES.addEventListener('error', function(event) {
+      var payload = {};
+      try { payload = JSON.parse(event.data || '{}'); } catch (_) {}
+      _scanES.close(); _scanES = null;
+      showScanStatus(payload.message || 'Re-index failed.', 'error', 8000);
+    });
+    _scanES.onerror = function() {
+      if (_scanES) { _scanES.close(); _scanES = null; }
+      showScanStatus('Re-index status connection lost.', 'error', 8000);
+    };
+  }
+
+  // Exposed globally so directory.html can call it after post-transcode re-index.
+  window.altoTriggerScan = function(libraryId) {
+    var url = '/api/scan' + (libraryId ? '?library_id=' + encodeURIComponent(libraryId) : '');
+    fetch(url, {method: 'POST'})
+      .then(function(r) {
+        return r.json().catch(function(){ return {}; }).then(function(data){
+          return {ok: r.ok, data: data};
+        });
+      })
+      .then(function(resp) {
+        if (!resp.ok) {
+          showScanStatus(resp.data.error || 'Unable to start re-index.', 'error', 8000);
+          return;
+        }
+        startScanSSE();
+      })
+      .catch(function() {
+        showScanStatus('Unable to start re-index.', 'error', 8000);
+      });
+  };
+})();
+</script>
+
+</body>
+</html>{{end}}

@@ -1,0 +1,21 @@
+version: "2"
+
+linters:
+  enable:
+    - govet
+    - errcheck
+    - staticcheck
+    - ineffassign
+    - unused
+    - modernize
+
+linters-settings:
+  govet:
+    enable-all: true
+  staticcheck:
+    checks:
+      - all
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
