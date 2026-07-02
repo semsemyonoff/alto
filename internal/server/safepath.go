@@ -134,7 +134,7 @@ func splitExistingPrefix(path string) (existing, tail string, err error) {
 		if _, statErr := os.Stat(current); statErr == nil {
 			// Reassemble tail segments in forward order.
 			t := ""
-			for i := len(segments) - 1; i >= 0; i-- {
+			for i := range slices.Backward(segments) {
 				if t == "" {
 					t = segments[i]
 				} else {

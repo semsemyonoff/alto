@@ -327,10 +327,10 @@ The redesign comes from the approved Claude Design prototype; a decoded local co
 - [x] NOTE: optional for v1; nothing else depends on it — skip if descoping. (implemented rather than skipped)
 
 ### Task 22: Verify acceptance criteria
-- [ ] verify Overview requirements (queue: pool/queued/cancel/list/global SSE; UI: shell/tree/stage/dock/queue/standby/scan; one shell on every screen)
-- [ ] verify edge cases: cancel queued vs running + terminal retention, workers=1 vs 2 with no stranded jobs, worker exit on shutdown, lossy disables START, un-indexed standby, Alpine survives HTMX swap
-- [ ] run `make test` (with `-race`) and `make lint`
-- [ ] run `cd web/frontend && npm run test && npm run build`
+- [x] verify Overview requirements (queue: pool/queued/cancel/list/global SSE; UI: shell/tree/stage/dock/queue/standby/scan; one shell on every screen)
+- [x] verify edge cases: cancel queued vs running + terminal retention, workers=1 vs 2 with no stranded jobs, worker exit on shutdown, lossy disables START, un-indexed standby, Alpine survives HTMX swap
+- [x] run `make test` (with `-race`) and `make lint`
+- [x] run `cd web/frontend && npm run test && npm run build`
 
 ### Task 23: [Final] Update documentation
 - [ ] update `CLAUDE.md` (`ALTO_TRANSCODE_WORKERS`; frontend toolchain + `make dev`/`make frontend-build`; `web/frontend` layout; Node prerequisite; retired `/api/transcode/{id}/progress`, new `/api/jobs*`)

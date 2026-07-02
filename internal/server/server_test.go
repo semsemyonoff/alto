@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -1555,7 +1556,7 @@ func itoa(n int64) string {
 				tmp = append(tmp, byte('0'+n%10))
 				n /= 10
 			}
-			for i := len(tmp) - 1; i >= 0; i-- {
+			for i := range slices.Backward(tmp) {
 				buf = append(buf, tmp[i])
 			}
 			return string(buf)
