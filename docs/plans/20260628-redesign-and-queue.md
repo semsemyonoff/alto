@@ -120,11 +120,11 @@ The redesign comes from the approved Claude Design prototype; a decoded local co
 - Modify: `internal/server/jobs.go`
 - Modify: `internal/server/jobs_test.go`
 
-- [ ] add a process-wide subscriber set guarded by `mu`; emit `update {id,status,pct,title,sub}` on enqueue/start/progress/complete/cancel; add the centralized pct-shaping helper (done→100, running→calcOverallPercent, failed/canceled→last/0)
-- [ ] add `subscribeEventsWithSnapshot()` that, under one `mu` lock, registers the subscriber and captures the `order` snapshot (no TOCTOU); non-blocking broadcast, drop slow subscribers; handler writes outside the lock
-- [ ] keep the existing per-job SSE working for now (retired in Task 18), now sharing the same `mu`
-- [ ] write tests: events in order; snapshot+subscribe atomic (no missed update); slow subscriber dropped, never blocks; pct shaping (done shows 100 even with no final report)
-- [ ] run tests — must pass before next task
+- [x] add a process-wide subscriber set guarded by `mu`; emit `update {id,status,pct,title,sub}` on enqueue/start/progress/complete/cancel; add the centralized pct-shaping helper (done→100, running→calcOverallPercent, failed/canceled→last/0)
+- [x] add `subscribeEventsWithSnapshot()` that, under one `mu` lock, registers the subscriber and captures the `order` snapshot (no TOCTOU); non-blocking broadcast, drop slow subscribers; handler writes outside the lock
+- [x] keep the existing per-job SSE working for now (retired in Task 18), now sharing the same `mu`
+- [x] write tests: events in order; snapshot+subscribe atomic (no missed update); slow subscriber dropped, never blocks; pct shaping (done shows 100 even with no final report)
+- [x] run tests — must pass before next task
 
 ### Task 5: `GET /api/jobs` list endpoint
 

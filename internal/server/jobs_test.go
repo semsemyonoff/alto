@@ -566,6 +566,162 @@ func TestJobManager_CancelUnknownOrFinished(t *testing.T) {
 	}
 }
 
+// TestJobManager_EventsInOrder verifies the global event bus emits update
+// events in the same order the job progresses through its lifecycle: queued
+// (on start), running (on dispatch), then done (on complete), each with the
+// centrally-shaped pct.
+func TestJobManager_EventsInOrder(t *testing.T) {
+	block := make(chan struct{})
+	eng := &blockingEngine{block: block}
+	jm := newJobManager(eng, 1, context.Background())
+	t.Cleanup(jm.Shutdown)
+
+	ch, snapshot := jm.subscribeEventsWithSnapshot()
+	t.Cleanup(func() { jm.unsubscribeEvents(ch) })
+	if len(snapshot) != 0 {
+		t.Fatalf("initial snapshot = %v, want empty", snapshot)
+	}
+
+	if _, started := jm.start("job1", "/dir1", transcode.Job{ID: "job1"}, "title1", "sub1"); !started {
+		t.Fatalf("start: expected success")
+	}
+
+	wantSeq := []JobStatus{JobStatusQueued, JobStatusRunning, JobStatusDone}
+	for i, want := range wantSeq {
+		if want == JobStatusDone {
+			close(block)
+		}
+		select {
+		case ev := <-ch:
+			if ev.ID != "job1" {
+				t.Fatalf("event[%d].ID = %q, want %q", i, ev.ID, "job1")
+			}
+			if ev.Status != want {
+				t.Fatalf("event[%d].Status = %q, want %q", i, ev.Status, want)
+			}
+			if ev.Title != "title1" || ev.Sub != "sub1" {
+				t.Fatalf("event[%d] = %+v, want title/sub preserved", i, ev)
+			}
+			if want == JobStatusDone && ev.Pct != 100 {
+				t.Fatalf("event[%d].Pct = %v, want 100 for done", i, ev.Pct)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for event[%d] (status %q)", i, want)
+		}
+	}
+}
+
+// TestJobManager_SubscribeSnapshotAtomic verifies that subscribeEventsWithSnapshot
+// captures the current job list atomically with registration: a job started
+// before subscribing shows up in the snapshot (not as a duplicate live event),
+// and a state change made after subscribing arrives exactly once on the channel.
+func TestJobManager_SubscribeSnapshotAtomic(t *testing.T) {
+	jm := newJobManager(nil, 0, context.Background())
+
+	js, started := jm.start("job1", "/dir1", transcode.Job{}, "t1", "s1")
+	if !started {
+		t.Fatalf("start: expected success")
+	}
+
+	ch, snapshot := jm.subscribeEventsWithSnapshot()
+	t.Cleanup(func() { jm.unsubscribeEvents(ch) })
+	if len(snapshot) != 1 || snapshot[0].ID != "job1" || snapshot[0].Status != JobStatusQueued {
+		t.Fatalf("snapshot = %+v, want single queued job1", snapshot)
+	}
+
+	jm.complete(js.id, nil)
+
+	select {
+	case ev := <-ch:
+		if ev.ID != "job1" || ev.Status != JobStatusDone || ev.Pct != 100 {
+			t.Fatalf("event = %+v, want done job1 at 100", ev)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the post-subscribe completion event")
+	}
+
+	select {
+	case ev, open := <-ch:
+		if open {
+			t.Fatalf("unexpected extra event: %+v", ev)
+		}
+	default:
+	}
+}
+
+// TestJobManager_SlowEventSubscriberDropped verifies that a subscriber whose
+// buffered channel fills up is dropped (its channel closed and removed from
+// the subscriber set) rather than allowed to block broadcastEvent.
+func TestJobManager_SlowEventSubscriberDropped(t *testing.T) {
+	jm := newJobManager(nil, 0, context.Background())
+
+	ch, _ := jm.subscribeEventsWithSnapshot()
+
+	js, started := jm.start("job1", "/dir1", transcode.Job{}, "t1", "s1")
+	if !started {
+		t.Fatalf("start: expected success")
+	}
+
+	// Flood well past the channel's buffer without ever reading from ch.
+	done := make(chan struct{})
+	go func() {
+		for range 200 {
+			jm.broadcastEvent(jobEvent{ID: js.id, Status: JobStatusRunning})
+		}
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("broadcastEvent blocked on a slow subscriber instead of dropping it")
+	}
+
+	jm.mu.Lock()
+	_, stillSubscribed := jm.eventSubs[ch]
+	jm.mu.Unlock()
+	if stillSubscribed {
+		t.Fatalf("slow subscriber was not dropped from eventSubs")
+	}
+
+	select {
+	case _, open := <-ch:
+		if open {
+			// Drain any buffered events; the channel must eventually report closed.
+			for range ch {
+			}
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("dropped subscriber's channel was never closed")
+	}
+}
+
+// TestJobManager_PctShapingDoneWithoutReport verifies that a job which
+// completes successfully without ever emitting a progress report still shows
+// pct 100 (rather than 0 from a nil latest report).
+func TestJobManager_PctShapingDoneWithoutReport(t *testing.T) {
+	jm := newJobManager(nil, 0, context.Background())
+
+	js, started := jm.start("job1", "/dir1", transcode.Job{}, "t1", "s1")
+	if !started {
+		t.Fatalf("start: expected success")
+	}
+
+	ch, _ := jm.subscribeEventsWithSnapshot()
+	t.Cleanup(func() { jm.unsubscribeEvents(ch) })
+
+	jm.complete(js.id, nil)
+
+	select {
+	case ev := <-ch:
+		if ev.Pct != 100 {
+			t.Fatalf("Pct = %v, want 100 (done with no final report)", ev.Pct)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the done event")
+	}
+}
+
 // TestJobManager_DoneFailedRemainListedUntilEviction verifies that jobs
 // reaching JobStatusDone/JobStatusFailed via complete() stay in both jobs and
 // order until the shared eviction runs, matching the queued-cancel path.

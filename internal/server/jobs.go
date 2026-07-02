@@ -159,6 +159,17 @@ func (js *jobState) closeSubs() {
 	js.subs = nil
 }
 
+// jobEvent is the global queue-panel event broadcast on every job lifecycle
+// transition (enqueue/start/progress/complete/cancel). Pct is shaped by
+// calcJobPercent so a finished job never shows a partial meter.
+type jobEvent struct {
+	ID     string    `json:"id"`
+	Status JobStatus `json:"status"`
+	Pct    float64   `json:"pct"`
+	Title  string    `json:"title"`
+	Sub    string    `json:"sub"`
+}
+
 // jobManager tracks all active and recently completed transcoding jobs and
 // dispatches queued jobs to a bounded pool of workers.
 type jobManager struct {
@@ -172,6 +183,103 @@ type jobManager struct {
 	cond     *sync.Cond
 	wg       sync.WaitGroup
 	shutdown bool
+
+	// eventSubs is the process-wide set of global queue-panel subscribers,
+	// guarded by mu like everything else. A subscriber whose channel is full
+	// is dropped (closed and removed) rather than allowed to block a
+	// broadcast or silently lag forever.
+	eventSubs map[chan jobEvent]struct{}
+}
+
+// calcJobPercent shapes a job's queue-panel percentage: a done job always
+// reports 100 regardless of its last progress report; a running/queued/
+// failed/canceled job reports its last known overall percent, or 0 if no
+// report ever arrived. Callers must hold jm.mu.
+func calcJobPercent(js *jobState) float64 {
+	if js.status == JobStatusDone {
+		return 100
+	}
+	if js.latest == nil {
+		return 0
+	}
+	return calcOverallPercent(*js.latest)
+}
+
+// eventForLocked builds the jobEvent snapshot for js. Callers must hold jm.mu.
+func (jm *jobManager) eventForLocked(js *jobState) jobEvent {
+	return jobEvent{
+		ID:     js.id,
+		Status: js.status,
+		Pct:    calcJobPercent(js),
+		Title:  js.title,
+		Sub:    js.sub,
+	}
+}
+
+// snapshotEvent returns the current jobEvent for id, or false if the job is
+// unknown (e.g. already evicted). Used by call sites that must release jm.mu
+// before they can safely build the event.
+func (jm *jobManager) snapshotEvent(id string) (jobEvent, bool) {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	js, ok := jm.jobs[id]
+	if !ok {
+		return jobEvent{}, false
+	}
+	return jm.eventForLocked(js), true
+}
+
+// broadcastEventLocked sends ev to every global event subscriber without
+// acquiring jm.mu; callers must already hold it. Sends are non-blocking: a
+// subscriber whose buffer is full is dropped (its channel is closed and
+// removed from the subscriber set) instead of blocking the broadcast.
+func (jm *jobManager) broadcastEventLocked(ev jobEvent) {
+	for ch := range jm.eventSubs {
+		select {
+		case ch <- ev:
+		default:
+			delete(jm.eventSubs, ch)
+			close(ch)
+		}
+	}
+}
+
+// broadcastEvent is broadcastEventLocked for callers that do not already hold jm.mu.
+func (jm *jobManager) broadcastEvent(ev jobEvent) {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	jm.broadcastEventLocked(ev)
+}
+
+// subscribeEventsWithSnapshot atomically registers a new global event
+// subscriber and captures the current job list (in order), both under one
+// mu lock, so a caller that renders the snapshot and then streams live
+// deltas from the returned channel can never miss or duplicate an update
+// that lands between the two steps.
+func (jm *jobManager) subscribeEventsWithSnapshot() (chan jobEvent, []jobEvent) {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	ch := make(chan jobEvent, 64)
+	jm.eventSubs[ch] = struct{}{}
+	snapshot := make([]jobEvent, 0, len(jm.order))
+	for _, id := range jm.order {
+		if js, ok := jm.jobs[id]; ok {
+			snapshot = append(snapshot, jm.eventForLocked(js))
+		}
+	}
+	return ch, snapshot
+}
+
+// unsubscribeEvents removes ch from the global subscriber set and closes it.
+// Safe to call even if broadcastEventLocked already dropped (and closed) ch
+// for being slow.
+func (jm *jobManager) unsubscribeEvents(ch chan jobEvent) {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	if _, ok := jm.eventSubs[ch]; ok {
+		delete(jm.eventSubs, ch)
+		close(ch)
+	}
 }
 
 // newJobManager creates a jobManager and, if engine is non-nil, starts workers
@@ -180,8 +288,9 @@ type jobManager struct {
 // from; canceling it (e.g. on server shutdown) cancels in-flight jobs.
 func newJobManager(engine TranscodeEngine, workers int, parentCtx context.Context) *jobManager {
 	jm := &jobManager{
-		jobs:  make(map[string]*jobState),
-		byDir: make(map[string]string),
+		jobs:      make(map[string]*jobState),
+		byDir:     make(map[string]string),
+		eventSubs: make(map[chan jobEvent]struct{}),
 	}
 	jm.cond = sync.NewCond(&jm.mu)
 	jm.engine = engine
@@ -203,9 +312,10 @@ func newJobManager(engine TranscodeEngine, workers int, parentCtx context.Contex
 // already queued or transcoding.
 func (jm *jobManager) start(id, dirPath string, job transcode.Job, title, sub string) (*jobState, bool) {
 	jm.mu.Lock()
-	defer jm.mu.Unlock()
 	if existingID, busy := jm.byDir[dirPath]; busy {
-		return jm.jobs[existingID], false
+		js := jm.jobs[existingID]
+		jm.mu.Unlock()
+		return js, false
 	}
 	js := &jobState{
 		id:       id,
@@ -222,6 +332,8 @@ func (jm *jobManager) start(id, dirPath string, job transcode.Job, title, sub st
 	jm.jobs[id] = js
 	jm.byDir[dirPath] = id
 	jm.order = append(jm.order, id)
+	jm.broadcastEventLocked(jm.eventForLocked(js))
+	jm.mu.Unlock()
 	jm.cond.Broadcast()
 	return js, true
 }
@@ -272,6 +384,7 @@ func (jm *jobManager) workerLoop(parentCtx context.Context) {
 		ctx, cancel := context.WithCancel(parentCtx)
 		js.cancel = cancel
 		job := js.job
+		jm.broadcastEventLocked(jm.eventForLocked(js))
 		jm.mu.Unlock()
 
 		err := jm.runOneJob(js, job, ctx)
@@ -294,6 +407,9 @@ func (jm *jobManager) runOneJob(js *jobState, job transcode.Job, ctx context.Con
 	go func() {
 		for p := range js.progress {
 			js.broadcast(p)
+			if ev, ok := jm.snapshotEvent(js.id); ok {
+				jm.broadcastEvent(ev)
+			}
 			js.log.add(fmt.Sprintf("file %d/%d: %s %.0f%%",
 				p.FileIndex+1, p.TotalFiles, p.CurrentFile, p.FilePercent))
 		}
@@ -333,6 +449,7 @@ func (jm *jobManager) complete(id string, err error) {
 			js.errMsg = err.Error()
 		}
 		delete(jm.byDir, js.dirPath)
+		jm.broadcastEventLocked(jm.eventForLocked(js))
 	}
 	jm.mu.Unlock()
 	if ok {
@@ -372,6 +489,7 @@ func (jm *jobManager) cancel(id string) cancelResult {
 		js.status = JobStatusCanceled
 		delete(jm.byDir, js.dirPath)
 		close(js.done)
+		jm.broadcastEventLocked(jm.eventForLocked(js))
 		jm.mu.Unlock()
 		js.closeSubs()
 		jm.scheduleEviction(id)
