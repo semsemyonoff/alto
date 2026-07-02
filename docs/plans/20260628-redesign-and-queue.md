@@ -248,10 +248,10 @@ The redesign comes from the approved Claude Design prototype; a decoded local co
 - Delete: `web/static/js/layout.js`
 - Modify: `internal/server/handlers_pages_test.go`
 
-- [ ] restyle tree (twisties, icons, codec badges, selection, search input) with prototype classes; update `handleTreeChildren` fragment markup keeping HTMX lazy attrs
-- [ ] reimplement the sidebar resizer in `resizer.ts` (localStorage persistence) and remove `layout.js`
-- [ ] write Go tests for fragment markup (classes, HTMX attrs, badge) + Vitest test for resizer clamp/persist
-- [ ] run tests + `npm run build` — must pass before next task
+- [x] restyle tree (twisties, icons, codec badges, selection, search input) with prototype classes; update `handleTreeChildren` fragment markup keeping HTMX lazy attrs
+- [x] reimplement the sidebar resizer in `resizer.ts` (localStorage persistence) and remove `layout.js`
+- [x] write Go tests for fragment markup (classes, HTMX attrs, badge) + Vitest test for resizer clamp/persist
+- [x] run tests + `npm run build` — must pass before next task
 
 ### Task 16: Rebuild directory stage + album aggregates
 

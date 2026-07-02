@@ -200,6 +200,28 @@ func TestRealTemplates_IndexRendersViteTagsStubWithoutBuiltDist(t *testing.T) {
 	}
 }
 
+// TestSidebar_RealTemplates_RendersTreeSearchInput verifies that the shared
+// sidebar partial (Task 15) renders a directory search input alongside the
+// tree, on both the index and directory pages.
+func TestSidebar_RealTemplates_RendersTreeSearchInput(t *testing.T) {
+	srv, _, _ := newTestServerWithRealTemplates(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `id="tree-search-input"`) {
+		t.Errorf("sidebar should render a tree search input; got:\n%s", body)
+	}
+	if !strings.Contains(body, `class="tree-search"`) {
+		t.Errorf("sidebar should wrap the search input in a tree-search container; got:\n%s", body)
+	}
+}
+
 // TestRealTemplates_IndexRendersHashedViteTagsWithBuiltDist verifies that,
 // against the project's actual built web/static/dist manifest, base.html
 // renders real hashed asset tags.

@@ -13,6 +13,10 @@
 
 <div class="tree-section">
   <div class="tree-section-header">Directories</div>
+  <div class="tree-search">
+    <input id="tree-search-input" type="text" placeholder="Search directories…" autocomplete="off" spellcheck="false">
+    <span class="tree-search-icon" aria-hidden="true"></span>
+  </div>
   <div id="tree-root">
     {{if .TopDirsHTML}}{{.TopDirsHTML}}{{else}}
     <div style="padding:12px 16px;color:var(--muted);font-size:13px;">
