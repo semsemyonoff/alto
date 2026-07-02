@@ -169,11 +169,16 @@ func (e *Engine) transcodeToDir(ctx context.Context, job Job, outDir string, pro
 			return fmt.Errorf("transcode %s: %w", fi.Name, err)
 		}
 		if err := e.probeFile(ctx, outPath); err != nil {
+			// ffprobe runs under ctx too: a canceled context kills it with an
+			// error that does not wrap context.Canceled. Surface cancellation so
+			// the queue maps the job to "canceled" rather than "failed".
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			return fmt.Errorf("output verification failed for %s: %w", fi.Name, err)
 		}
 	}
-	copyNonAudioFiles(job.SourceDir, outDir)
-	return nil
+	return copyNonAudioFiles(ctx, job.SourceDir, outDir)
 }
 
 // replacedEntry records a completed per-file replacement for rollback purposes.
@@ -254,6 +259,12 @@ func (e *Engine) transcodeReplace(ctx context.Context, job Job, progress chan<- 
 		// Verify the transcoded output is a valid audio file before replacing the original.
 		if err := e.probeFile(ctx, tmpPath); err != nil {
 			rollback()
+			// See transcodeToDir: ffprobe cancellation surfaces as an error that
+			// does not wrap context.Canceled. Surface cancellation after the
+			// rollback so the queue marks the job "canceled" rather than "failed".
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			return fmt.Errorf("output verification failed for %s: %w", fi.Name, err)
 		}
 
@@ -402,14 +413,18 @@ func buildArgs(ffmpegBin, input, output string, preset Preset) []string {
 }
 
 // copyNonAudioFiles copies all non-audio files from srcDir to dstDir.
-// Errors per file are logged but do not halt the copy.
-func copyNonAudioFiles(srcDir, dstDir string) {
+// Per-file copy errors are logged but do not halt the copy; a canceled context
+// aborts the copy and is returned so the job is marked "canceled".
+func copyNonAudioFiles(ctx context.Context, srcDir, dstDir string) error {
 	entries, err := os.ReadDir(srcDir)
 	if err != nil {
 		slog.Warn("copyNonAudioFiles: ReadDir failed", "dir", srcDir, "err", err)
-		return
+		return nil
 	}
 	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if entry.IsDir() {
 			continue
 		}
@@ -423,14 +438,20 @@ func copyNonAudioFiles(srcDir, dstDir string) {
 		}
 		src := filepath.Join(srcDir, name)
 		dst := filepath.Join(dstDir, name)
-		if err := copyFile(src, dst); err != nil {
+		if err := copyFile(ctx, src, dst); err != nil {
+			// A canceled context aborts a large copy mid-stream; propagate it so
+			// the worker frees its slot and the job is reported as canceled.
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			slog.Warn("copyNonAudioFiles: copy failed", "file", name, "err", err)
 		}
 	}
+	return nil
 }
 
-// copyFile copies the file at src to dst.
-func copyFile(src, dst string) error {
+// copyFile copies the file at src to dst, honoring ctx cancellation during the copy.
+func copyFile(ctx context.Context, src, dst string) error {
 	in, err := os.Open(src)
 	if err != nil {
 		return err
@@ -442,12 +463,35 @@ func copyFile(src, dst string) error {
 		return err
 	}
 
-	if _, err := io.Copy(out, in); err != nil {
+	if err := copyWithContext(ctx, out, in); err != nil {
 		_ = out.Close()
 		_ = os.Remove(dst)
 		return err
 	}
 	return out.Close()
+}
+
+// copyWithContext copies from src to dst in bounded chunks, checking ctx before
+// each chunk so a long copy of a large file can be canceled promptly.
+func copyWithContext(ctx context.Context, dst io.Writer, src io.Reader) error {
+	buf := make([]byte, 32*1024)
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		n, rerr := src.Read(buf)
+		if n > 0 {
+			if _, werr := dst.Write(buf[:n]); werr != nil {
+				return werr
+			}
+		}
+		if rerr == io.EOF {
+			return nil
+		}
+		if rerr != nil {
+			return rerr
+		}
+	}
 }
 
 // execFfmpeg runs ffmpeg with the given args, reading stderr and calling progressFn

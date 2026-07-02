@@ -869,6 +869,43 @@ func TestHandleScanStatus_CompleteIncludesSummary(t *testing.T) {
 	}
 }
 
+// TestScanBroadcast_TerminalEventNotDropped verifies that a terminal event
+// ("complete"/"error") is delivered even when a slow subscriber's buffer is
+// already full of progress events. Progress may be dropped; the terminal event
+// must not be, or the client sees a bare connection close.
+func TestScanBroadcast_TerminalEventNotDropped(t *testing.T) {
+	var ss scanState
+	if !ss.start() {
+		t.Fatal("start() returned false on a fresh scanState")
+	}
+	ch, running := ss.subscribe()
+	if !running {
+		t.Fatal("subscribe() reported not running after start()")
+	}
+
+	// Saturate the buffer with progress events (no consumer draining).
+	for i := 0; i < cap(ch)+5; i++ {
+		ss.broadcast(ScanEvent{Type: "progress", Discovered: i})
+	}
+
+	// Broadcasting a terminal event must not block and must be observable.
+	ss.broadcast(ScanEvent{Type: "complete", Message: "done", Added: 2})
+
+	// Drain the channel; it is closed by the terminal broadcast, so the range ends.
+	var gotComplete bool
+	for e := range ch {
+		if e.Type == "complete" {
+			gotComplete = true
+			if e.Message != "done" || e.Added != 2 {
+				t.Fatalf("terminal event corrupted: %+v", e)
+			}
+		}
+	}
+	if !gotComplete {
+		t.Fatal("terminal 'complete' event was dropped from a full buffer")
+	}
+}
+
 // --- GET /api/cover ---
 
 func TestHandleCover_MissingPath(t *testing.T) {

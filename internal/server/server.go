@@ -104,21 +104,51 @@ func (ss *scanState) reset() {
 
 // broadcast sends an event to all subscribers.
 // On "complete" or "error", closes all subscriber channels and marks the scan done.
+//
+// Progress events use a non-blocking send and may be dropped for a slow
+// subscriber. Terminal events ("complete"/"error") must never be dropped —
+// otherwise the client sees the stream close with no completion message and
+// reports a connection error — so they are delivered via sendScanTerminal,
+// which evicts buffered (superseded) progress events to make room.
 func (ss *scanState) broadcast(e ScanEvent) {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
+	terminal := e.Type == "complete" || e.Type == "error"
 	for _, ch := range ss.subs {
+		if terminal {
+			sendScanTerminal(ch, e)
+			continue
+		}
 		select {
 		case ch <- e:
 		default:
 		}
 	}
-	if e.Type == "complete" || e.Type == "error" {
+	if terminal {
 		for _, ch := range ss.subs {
 			close(ch)
 		}
 		ss.subs = nil
 		ss.running = false
+	}
+}
+
+// sendScanTerminal delivers a terminal event to ch without blocking. When the
+// buffer is full of superseded progress events it evicts one and retries; the
+// broadcaster is the sole sender, so a slot always frees up and this returns
+// after at most cap(ch)+1 iterations.
+func sendScanTerminal(ch chan ScanEvent, e ScanEvent) {
+	for {
+		select {
+		case ch <- e:
+			return
+		default:
+		}
+		// Buffer full: drop one buffered progress event to make room, then retry.
+		select {
+		case <-ch:
+		default:
+		}
 	}
 }
 

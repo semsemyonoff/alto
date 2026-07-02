@@ -651,7 +651,9 @@ func TestCopyNonAudioFiles(t *testing.T) {
 		}
 	}
 
-	copyNonAudioFiles(srcDir, dstDir)
+	if err := copyNonAudioFiles(context.Background(), srcDir, dstDir); err != nil {
+		t.Fatalf("copyNonAudioFiles: %v", err)
+	}
 
 	for name, isAudio := range files {
 		_, err := os.Stat(filepath.Join(dstDir, name))
