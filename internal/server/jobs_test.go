@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/semsemyonoff/ALTO/internal/transcode"
 )
@@ -48,8 +49,8 @@ func TestJobManager_CompleteStatusMapping(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			jm := newJobManager()
-			js, started := jm.start("job1", "/dir1")
+			jm := newJobManager(nil, 0, context.Background())
+			js, started := jm.start("job1", "/dir1", transcode.Job{}, "", "")
 			if !started {
 				t.Fatalf("start: expected success")
 			}
@@ -87,20 +88,17 @@ func TestJobManager_CompleteStatusMapping(t *testing.T) {
 // TestJobState_MetadataPersistence verifies the new title/sub/job/cancel/
 // fanoutDone fields can be set and read back under jm.mu.
 func TestJobState_MetadataPersistence(t *testing.T) {
-	jm := newJobManager()
-	js, started := jm.start("job1", "/dir1")
+	jm := newJobManager(nil, 0, context.Background())
+	job := transcode.Job{ID: "job1", SourceDir: "/dir1"}
+	js, started := jm.start("job1", "/dir1", job, "album1", "flac -> opus/Music Balanced")
 	if !started {
 		t.Fatalf("start: expected success")
 	}
 
-	job := transcode.Job{ID: "job1", SourceDir: "/dir1"}
 	_, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	jm.mu.Lock()
-	js.title = "album1"
-	js.sub = "flac -> opus/Music Balanced"
-	js.job = job
 	js.cancel = cancel
 	js.fanoutDone = make(chan struct{})
 	jm.mu.Unlock()
@@ -135,8 +133,8 @@ func TestJobState_MetadataPersistence(t *testing.T) {
 // of subsMu into jobManager.mu removed the separate lock without introducing
 // unsynchronized access to latest/subs.
 func TestJobState_LatestRaceFree(t *testing.T) {
-	jm := newJobManager()
-	js, started := jm.start("job1", "/dir1")
+	jm := newJobManager(nil, 0, context.Background())
+	js, started := jm.start("job1", "/dir1", transcode.Job{}, "", "")
 	if !started {
 		t.Fatalf("start: expected success")
 	}
@@ -168,4 +166,274 @@ func TestJobState_LatestRaceFree(t *testing.T) {
 	jm.mu.Lock()
 	_ = js.latest
 	jm.mu.Unlock()
+}
+
+// blockingEngine blocks in Transcode until block is closed, then returns err.
+type blockingEngine struct {
+	block chan struct{}
+	err   error
+}
+
+func (e *blockingEngine) Transcode(_ context.Context, _ transcode.Job, _ chan<- transcode.ProgressReport) error {
+	<-e.block
+	return e.err
+}
+
+// ctxEngine blocks in Transcode until ctx is canceled, then returns ctx.Err().
+type ctxEngine struct{}
+
+func (ctxEngine) Transcode(ctx context.Context, _ transcode.Job, _ chan<- transcode.ProgressReport) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+// concurrencyTrackingEngine counts concurrent Transcode calls in flight and
+// blocks on release, letting tests assert the achieved concurrency.
+type concurrencyTrackingEngine struct {
+	release chan struct{}
+
+	mu      sync.Mutex
+	current int
+	maxSeen int
+}
+
+func (e *concurrencyTrackingEngine) Transcode(_ context.Context, _ transcode.Job, _ chan<- transcode.ProgressReport) error {
+	e.mu.Lock()
+	e.current++
+	if e.current > e.maxSeen {
+		e.maxSeen = e.current
+	}
+	e.mu.Unlock()
+
+	<-e.release
+
+	e.mu.Lock()
+	e.current--
+	e.mu.Unlock()
+	return nil
+}
+
+// jobStatusFor returns the current status of id, or "" if unknown.
+func jobStatusFor(jm *jobManager, id string) JobStatus {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	js, ok := jm.jobs[id]
+	if !ok {
+		return ""
+	}
+	return js.status
+}
+
+// waitForJobStatus polls until id reaches want or the timeout elapses.
+func waitForJobStatus(t *testing.T, jm *jobManager, id string, want JobStatus, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if jobStatusFor(jm, id) == want {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("job %s did not reach status %q within %s (last status %q)", id, want, timeout, jobStatusFor(jm, id))
+}
+
+// TestJobManager_WorkersOneSerializes verifies that with workers=1 a second
+// queued job stays queued while the first is running, and auto-starts once
+// the first completes.
+func TestJobManager_WorkersOneSerializes(t *testing.T) {
+	block := make(chan struct{})
+	eng := &blockingEngine{block: block}
+	jm := newJobManager(eng, 1, context.Background())
+	t.Cleanup(jm.Shutdown)
+
+	if _, started := jm.start("job1", "/dir1", transcode.Job{ID: "job1"}, "t1", "s1"); !started {
+		t.Fatalf("start job1: expected success")
+	}
+	if _, started := jm.start("job2", "/dir2", transcode.Job{ID: "job2"}, "t2", "s2"); !started {
+		t.Fatalf("start job2: expected success")
+	}
+
+	waitForJobStatus(t, jm, "job1", JobStatusRunning, 2*time.Second)
+
+	// job2 must stay queued while the single worker is occupied by job1.
+	time.Sleep(50 * time.Millisecond)
+	if got := jobStatusFor(jm, "job2"); got != JobStatusQueued {
+		t.Fatalf("job2 status = %q, want %q (stranded or started early)", got, JobStatusQueued)
+	}
+
+	close(block)
+
+	waitForJobStatus(t, jm, "job1", JobStatusDone, 2*time.Second)
+	waitForJobStatus(t, jm, "job2", JobStatusDone, 2*time.Second)
+
+	jm.mu.Lock()
+	stranded := jm.nextQueuedLocked()
+	jm.mu.Unlock()
+	if stranded != "" {
+		t.Errorf("stranded queued job: %q", stranded)
+	}
+}
+
+// TestJobManager_WorkersTwoConcurrent verifies that with workers=2 both queued
+// jobs run concurrently and neither is left stranded in the queue.
+func TestJobManager_WorkersTwoConcurrent(t *testing.T) {
+	eng := &concurrencyTrackingEngine{release: make(chan struct{})}
+	jm := newJobManager(eng, 2, context.Background())
+	t.Cleanup(jm.Shutdown)
+
+	if _, started := jm.start("job1", "/dir1", transcode.Job{ID: "job1"}, "t1", "s1"); !started {
+		t.Fatalf("start job1: expected success")
+	}
+	if _, started := jm.start("job2", "/dir2", transcode.Job{ID: "job2"}, "t2", "s2"); !started {
+		t.Fatalf("start job2: expected success")
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		eng.mu.Lock()
+		seen := eng.maxSeen
+		eng.mu.Unlock()
+		if seen >= 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("both jobs never ran concurrently, maxSeen=%d", seen)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	close(eng.release)
+
+	waitForJobStatus(t, jm, "job1", JobStatusDone, 2*time.Second)
+	waitForJobStatus(t, jm, "job2", JobStatusDone, 2*time.Second)
+
+	jm.mu.Lock()
+	stranded := jm.nextQueuedLocked()
+	jm.mu.Unlock()
+	if stranded != "" {
+		t.Errorf("stranded queued job: %q", stranded)
+	}
+}
+
+// TestJobManager_CompleteOnlyAfterFanoutDrains verifies that by the time a job's
+// done channel is closed, the fanout goroutine has already drained every
+// progress report into the log (no progress event is lost or arrives after
+// the terminal state is visible).
+func TestJobManager_CompleteOnlyAfterFanoutDrains(t *testing.T) {
+	reports := []transcode.ProgressReport{
+		{CurrentFile: "a.flac", FileIndex: 0, TotalFiles: 2, FilePercent: 100},
+		{CurrentFile: "b.flac", FileIndex: 1, TotalFiles: 2, FilePercent: 100},
+	}
+	eng := &mockEngine{reports: reports}
+	jm := newJobManager(eng, 1, context.Background())
+	t.Cleanup(jm.Shutdown)
+
+	job := transcode.Job{ID: "job1", Preset: transcode.Preset{Codec: transcode.CodecOpus, Name: "Balanced"}}
+	js, started := jm.start("job1", "/dir1", job, "t1", "s1")
+	if !started {
+		t.Fatalf("start: expected success")
+	}
+
+	select {
+	case <-js.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("job did not complete in time")
+	}
+
+	lines := js.log.lines()
+	if len(lines) != 4 {
+		t.Fatalf("expected 4 log lines (start + 2 progress + complete) once done, got %d: %v", len(lines), lines)
+	}
+
+	jm.mu.Lock()
+	latest := js.latest
+	jm.mu.Unlock()
+	if latest == nil || latest.CurrentFile != "b.flac" {
+		t.Errorf("latest = %+v, want final report for b.flac", latest)
+	}
+}
+
+// TestJobManager_OrderPreserved verifies that jm.order reflects registration
+// order and is not reordered by dispatch or completion.
+func TestJobManager_OrderPreserved(t *testing.T) {
+	block := make(chan struct{})
+	eng := &blockingEngine{block: block}
+	jm := newJobManager(eng, 1, context.Background())
+	t.Cleanup(jm.Shutdown)
+
+	ids := []string{"job1", "job2", "job3"}
+	for i, id := range ids {
+		dir := fmt.Sprintf("/dir%d", i)
+		if _, started := jm.start(id, dir, transcode.Job{ID: id}, id, ""); !started {
+			t.Fatalf("start %s: expected success", id)
+		}
+	}
+
+	jm.mu.Lock()
+	order := append([]string(nil), jm.order...)
+	jm.mu.Unlock()
+	if len(order) != 3 || order[0] != "job1" || order[1] != "job2" || order[2] != "job3" {
+		t.Fatalf("order = %v, want [job1 job2 job3]", order)
+	}
+
+	close(block)
+	for _, id := range ids {
+		waitForJobStatus(t, jm, id, JobStatusDone, 2*time.Second)
+	}
+
+	jm.mu.Lock()
+	order = append([]string(nil), jm.order...)
+	jm.mu.Unlock()
+	if len(order) != 3 || order[0] != "job1" || order[1] != "job2" || order[2] != "job3" {
+		t.Fatalf("order after completion = %v, want [job1 job2 job3] (terminal jobs stay in order until eviction)", order)
+	}
+}
+
+// TestJobManager_WorkersExitOnShutdown verifies that Shutdown returns (workers
+// exit) once an in-flight job's context is canceled, and that idle workers
+// with nothing queued exit immediately. Run under -race to confirm no leak.
+func TestJobManager_WorkersExitOnShutdown(t *testing.T) {
+	t.Run("idle workers", func(t *testing.T) {
+		jm := newJobManager(&ctxEngine{}, 3, context.Background())
+
+		done := make(chan struct{})
+		go func() {
+			jm.Shutdown()
+			close(done)
+		}()
+
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("Shutdown did not return for idle workers")
+		}
+	})
+
+	t.Run("in-flight job canceled via parent ctx", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		jm := newJobManager(&ctxEngine{}, 2, ctx)
+
+		if _, started := jm.start("job1", "/dir1", transcode.Job{ID: "job1"}, "t1", "s1"); !started {
+			t.Fatalf("start: expected success")
+		}
+		waitForJobStatus(t, jm, "job1", JobStatusRunning, 2*time.Second)
+
+		cancel()
+
+		done := make(chan struct{})
+		go func() {
+			jm.Shutdown()
+			close(done)
+		}()
+
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("Shutdown did not return after parent ctx cancellation; workers may have leaked")
+		}
+
+		waitForJobStatus(t, jm, "job1", JobStatusCanceled, 2*time.Second)
+	})
 }

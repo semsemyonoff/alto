@@ -95,13 +95,13 @@ The redesign comes from the approved Claude Design prototype; a decoded local co
 - Modify: `internal/server/handlers_transcode.go` (`handleTranscodeStart` enqueues via new `start`, no direct `runJob`)
 - Modify: `internal/server/jobs_test.go`, `internal/server/transcode_test.go` (helper `t.Cleanup(srv.Shutdown)`)
 
-- [ ] add `order`, `engine`, `workers`, `cond` (on `mu`), `wg`, `shutdown` to `jobManager`; `newJobManager` starts N workers **only if `engine != nil`**
-- [ ] replace async `runJob` with a **synchronous worker-owned `runOneJob`**: start fanout + engine goroutines, wait for the engine result, `close(js.progress)`, wait on `fanoutDone` (so `latest`/logs are finalized), return err — never holding `mu` while waiting
-- [ ] worker loop: under `mu` pick first `queued` id, transition `running`, build cancel ctx, **unlock**, call `runOneJob` (slot occupied for the whole job → bounded concurrency), relock, `complete()` (emit terminal event with finalized pct); when none queued `cond.Wait()`; exit on `shutdown`
-- [ ] change `start(...)` to register `queued`, store `Job`/`title`/`sub`, keep `byDir` dedup, append to `order`, `cond.Broadcast()`; update `handleTranscodeStart` to call it (title = dir basename or `library/relpath`; sub = `sourceCodec → preset`)
-- [ ] add `Shutdown` path: set flag, cancel ctx, `cond.Broadcast()`, `wg.Wait()`; engine-based test helpers get `t.Cleanup(srv.Shutdown)`; default 1 / min 1 workers
-- [ ] write tests: workers=1 serializes (2nd stays queued then auto-starts); workers=2 run two concurrently with **no stranded queued job**; a job marked complete only after fanout drains (no progress event after terminal); `order` preserved; workers exit on shutdown (no leak under `-race`)
-- [ ] run tests — must pass before next task
+- [x] add `order`, `engine`, `workers`, `cond` (on `mu`), `wg`, `shutdown` to `jobManager`; `newJobManager` starts N workers **only if `engine != nil`**
+- [x] replace async `runJob` with a **synchronous worker-owned `runOneJob`**: start fanout + engine goroutines, wait for the engine result, `close(js.progress)`, wait on `fanoutDone` (so `latest`/logs are finalized), return err — never holding `mu` while waiting
+- [x] worker loop: under `mu` pick first `queued` id, transition `running`, build cancel ctx, **unlock**, call `runOneJob` (slot occupied for the whole job → bounded concurrency), relock, `complete()` (emit terminal event with finalized pct); when none queued `cond.Wait()`; exit on `shutdown`
+- [x] change `start(...)` to register `queued`, store `Job`/`title`/`sub`, keep `byDir` dedup, append to `order`, `cond.Broadcast()`; update `handleTranscodeStart` to call it (title = dir basename or `library/relpath`; sub = `sourceCodec → preset`)
+- [x] add `Shutdown` path: set flag, cancel ctx, `cond.Broadcast()`, `wg.Wait()`; engine-based test helpers get `t.Cleanup(srv.Shutdown)`; default 1 / min 1 workers
+- [x] write tests: workers=1 serializes (2nd stays queued then auto-starts); workers=2 run two concurrently with **no stranded queued job**; a job marked complete only after fanout drains (no progress event after terminal); `order` preserved; workers exit on shutdown (no leak under `-race`)
+- [x] run tests — must pass before next task
 
 ### Task 3: Cancellation + consistent terminal retention/eviction
 

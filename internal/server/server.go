@@ -156,7 +156,7 @@ func NewWithEngine(database *db.DB, scanner LibraryScanner, engine TranscodeEngi
 		cfg:            cfg,
 		mux:            http.NewServeMux(),
 		tmpl:           templateEngine{dir: tmplDir},
-		jobs:           newJobManager(),
+		jobs:           newJobManager(engine, 1, shutdownCtx),
 		staticDir:      staticDir,
 		shutdownCtx:    shutdownCtx,
 		shutdownCancel: shutdownCancel,
@@ -166,8 +166,10 @@ func NewWithEngine(database *db.DB, scanner LibraryScanner, engine TranscodeEngi
 }
 
 // Shutdown cancels all in-flight transcode jobs and releases server resources.
+// It blocks until all worker goroutines have exited.
 func (s *Server) Shutdown() {
 	s.shutdownCancel()
+	s.jobs.Shutdown()
 }
 
 // ServeHTTP implements http.Handler.

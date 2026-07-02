@@ -159,23 +159,49 @@ func (js *jobState) closeSubs() {
 	js.subs = nil
 }
 
-// jobManager tracks all active and recently completed transcoding jobs.
+// jobManager tracks all active and recently completed transcoding jobs and
+// dispatches queued jobs to a bounded pool of workers.
 type jobManager struct {
 	mu    sync.Mutex
 	jobs  map[string]*jobState
 	byDir map[string]string // source dir -> job ID
+	order []string          // job IDs in registration order; the queue list source of truth
+
+	engine   TranscodeEngine
+	workers  int
+	cond     *sync.Cond
+	wg       sync.WaitGroup
+	shutdown bool
 }
 
-func newJobManager() *jobManager {
-	return &jobManager{
+// newJobManager creates a jobManager and, if engine is non-nil, starts workers
+// worker goroutines (minimum 1) that dispatch queued jobs to the engine.
+// parentCtx is the context each worker derives its per-job cancel context
+// from; canceling it (e.g. on server shutdown) cancels in-flight jobs.
+func newJobManager(engine TranscodeEngine, workers int, parentCtx context.Context) *jobManager {
+	jm := &jobManager{
 		jobs:  make(map[string]*jobState),
 		byDir: make(map[string]string),
 	}
+	jm.cond = sync.NewCond(&jm.mu)
+	jm.engine = engine
+	if engine != nil {
+		if workers < 1 {
+			workers = 1
+		}
+		jm.workers = workers
+		for range workers {
+			jm.wg.Add(1)
+			go jm.workerLoop(parentCtx)
+		}
+	}
+	return jm
 }
 
-// start registers a new job. Returns the new jobState and true on success,
-// or the conflicting jobState and false when that directory is already transcoding.
-func (jm *jobManager) start(id, dirPath string) (*jobState, bool) {
+// start registers a new job as queued. Returns the new jobState and true on
+// success, or the conflicting jobState and false when that directory is
+// already queued or transcoding.
+func (jm *jobManager) start(id, dirPath string, job transcode.Job, title, sub string) (*jobState, bool) {
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
 	if existingID, busy := jm.byDir[dirPath]; busy {
@@ -185,14 +211,110 @@ func (jm *jobManager) start(id, dirPath string) (*jobState, bool) {
 		id:       id,
 		dirPath:  dirPath,
 		jm:       jm,
-		status:   JobStatusRunning,
+		title:    title,
+		sub:      sub,
+		job:      job,
+		status:   JobStatusQueued,
 		progress: make(chan transcode.ProgressReport, 64),
 		log:      newRingBuffer(1000),
 		done:     make(chan struct{}),
 	}
 	jm.jobs[id] = js
 	jm.byDir[dirPath] = id
+	jm.order = append(jm.order, id)
+	jm.cond.Broadcast()
 	return js, true
+}
+
+// Shutdown stops accepting new dispatch, wakes all workers so they observe
+// the shutdown flag, and waits for them to exit. It does not cancel
+// already-running jobs itself — callers cancel the shared parentCtx (passed
+// to newJobManager) to propagate cancellation into in-flight engine calls.
+func (jm *jobManager) Shutdown() {
+	jm.mu.Lock()
+	jm.shutdown = true
+	jm.mu.Unlock()
+	jm.cond.Broadcast()
+	jm.wg.Wait()
+}
+
+// nextQueuedLocked returns the first job ID in order whose status is queued,
+// or "" if none. Callers must hold jm.mu.
+func (jm *jobManager) nextQueuedLocked() string {
+	for _, id := range jm.order {
+		if js, ok := jm.jobs[id]; ok && js.status == JobStatusQueued {
+			return id
+		}
+	}
+	return ""
+}
+
+// workerLoop repeatedly picks the next queued job, runs it to completion, and
+// marks it done. It occupies its worker slot for the whole job, which is what
+// bounds concurrency to jm.workers. It exits once jm.shutdown is set and no
+// job is being run.
+func (jm *jobManager) workerLoop(parentCtx context.Context) {
+	defer jm.wg.Done()
+	for {
+		jm.mu.Lock()
+		id := jm.nextQueuedLocked()
+		for id == "" && !jm.shutdown {
+			jm.cond.Wait()
+			id = jm.nextQueuedLocked()
+		}
+		if id == "" {
+			// shutdown with nothing queued.
+			jm.mu.Unlock()
+			return
+		}
+		js := jm.jobs[id]
+		js.status = JobStatusRunning
+		ctx, cancel := context.WithCancel(parentCtx)
+		js.cancel = cancel
+		job := js.job
+		jm.mu.Unlock()
+
+		err := jm.runOneJob(js, job, ctx)
+		cancel()
+		jm.complete(id, err)
+	}
+}
+
+// runOneJob runs a single job to completion: it starts the fanout goroutine
+// (which drains js.progress into latest/log and SSE subscribers) and calls
+// the engine synchronously, then waits for the fanout goroutine to finish
+// draining so latest/log are finalized before returning. It never holds jm.mu
+// while waiting on the engine or the fanout goroutine.
+func (jm *jobManager) runOneJob(js *jobState, job transcode.Job, ctx context.Context) error {
+	fanoutDone := make(chan struct{})
+	jm.mu.Lock()
+	js.fanoutDone = fanoutDone
+	jm.mu.Unlock()
+
+	go func() {
+		for p := range js.progress {
+			js.broadcast(p)
+			js.log.add(fmt.Sprintf("file %d/%d: %s %.0f%%",
+				p.FileIndex+1, p.TotalFiles, p.CurrentFile, p.FilePercent))
+		}
+		// Engine has finished; close SSE subscribers.
+		js.closeSubs()
+		close(fanoutDone)
+	}()
+
+	js.log.add(fmt.Sprintf("job %s started: %s -> %s/%s",
+		js.id, job.SourceDir, job.Preset.Codec, job.Preset.Name))
+
+	err := jm.engine.Transcode(ctx, job, js.progress)
+	close(js.progress) // unblocks the fanout goroutine
+	<-fanoutDone
+
+	if err != nil {
+		js.log.add(fmt.Sprintf("job %s failed: %v", js.id, err))
+	} else {
+		js.log.add(fmt.Sprintf("job %s complete", js.id))
+	}
+	return err
 }
 
 // complete marks the job as done or failed, frees the dir slot, and closes done.
@@ -233,39 +355,4 @@ func (jm *jobManager) get(id string) (*jobState, bool) {
 	defer jm.mu.Unlock()
 	js, ok := jm.jobs[id]
 	return js, ok
-}
-
-// runJob starts the goroutines that drive a job and fan out progress events.
-// parentCtx is cancelled when the server shuts down, which propagates cancellation
-// to in-flight transcode jobs to prevent library corruption in replace mode.
-func runJob(js *jobState, jm *jobManager, engine TranscodeEngine, job transcode.Job, parentCtx context.Context) {
-	// Fanout goroutine: reads from the engine's progress channel, broadcasts to
-	// SSE subscribers, and appends summary lines to the log ring buffer.
-	go func() {
-		for p := range js.progress {
-			js.broadcast(p)
-			js.log.add(fmt.Sprintf("file %d/%d: %s %.0f%%",
-				p.FileIndex+1, p.TotalFiles, p.CurrentFile, p.FilePercent))
-		}
-		// Engine has finished; close SSE subscribers.
-		js.closeSubs()
-	}()
-
-	// Engine goroutine.
-	go func() {
-		js.log.add(fmt.Sprintf("job %s started: %s -> %s/%s",
-			js.id, job.SourceDir, job.Preset.Codec, job.Preset.Name))
-		ctx, cancel := context.WithCancel(parentCtx)
-		defer cancel()
-
-		err := engine.Transcode(ctx, job, js.progress)
-		close(js.progress) // unblocks fanout goroutine
-
-		if err != nil {
-			js.log.add(fmt.Sprintf("job %s failed: %v", js.id, err))
-		} else {
-			js.log.add(fmt.Sprintf("job %s complete", js.id))
-		}
-		jm.complete(js.id, err)
-	}()
 }

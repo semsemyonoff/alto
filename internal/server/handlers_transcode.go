@@ -146,7 +146,13 @@ func (s *Server) handleTranscodeStart(w http.ResponseWriter, r *http.Request) {
 		OutputDir:   s.cfg.OutputDir,
 	}
 
-	js, started := s.jobs.start(id, resolved)
+	title := lib.Name
+	if rel != "" && rel != "." {
+		title = lib.Name + "/" + rel
+	}
+	sub := fmt.Sprintf("%s → %s/%s", tracks[0].Codec, preset.Codec, preset.Name)
+
+	js, started := s.jobs.start(id, resolved, job, title, sub)
 	if !started {
 		writeJSON(w, http.StatusConflict, map[string]string{
 			"error":  "a transcode job is already running for this directory",
@@ -154,8 +160,6 @@ func (s *Server) handleTranscodeStart(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-
-	runJob(js, s.jobs, s.engine, job, s.shutdownCtx)
 
 	writeJSON(w, http.StatusAccepted, map[string]string{"job_id": id})
 }

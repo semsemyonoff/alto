@@ -78,6 +78,7 @@ func newTestServerWithEngine(t *testing.T, eng TranscodeEngine) (*Server, *db.DB
 		OutputDir: t.TempDir(),
 	}
 	srv := NewWithEngine(database, &mockScanner{}, eng, cfg)
+	t.Cleanup(srv.Shutdown)
 	return srv, database, libDir, libDir + "/album1"
 }
 
