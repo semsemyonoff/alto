@@ -437,3 +437,183 @@ func TestJobManager_WorkersExitOnShutdown(t *testing.T) {
 		waitForJobStatus(t, jm, "job1", JobStatusCanceled, 2*time.Second)
 	})
 }
+
+// evict forces id's scheduled 30-min eviction to run immediately, so tests
+// don't have to wait on the real timer.
+func evict(jm *jobManager, id string) {
+	jm.mu.Lock()
+	delete(jm.jobs, id)
+	for i, oid := range jm.order {
+		if oid == id {
+			jm.order = append(jm.order[:i], jm.order[i+1:]...)
+			break
+		}
+	}
+	jm.mu.Unlock()
+}
+
+// TestJobManager_CancelQueued verifies that canceling a queued job marks it
+// canceled without ever running it, that it stays listed (never removed from
+// order) until eviction, and that eviction then removes it from both jobs
+// and order.
+func TestJobManager_CancelQueued(t *testing.T) {
+	block := make(chan struct{})
+	eng := &blockingEngine{block: block}
+	jm := newJobManager(eng, 1, context.Background())
+	t.Cleanup(jm.Shutdown)
+
+	if _, started := jm.start("job1", "/dir1", transcode.Job{ID: "job1"}, "t1", "s1"); !started {
+		t.Fatalf("start job1: expected success")
+	}
+	if _, started := jm.start("job2", "/dir2", transcode.Job{ID: "job2"}, "t2", "s2"); !started {
+		t.Fatalf("start job2: expected success")
+	}
+	waitForJobStatus(t, jm, "job1", JobStatusRunning, 2*time.Second)
+
+	if got := jm.cancel("job2"); got != cancelResultCanceled {
+		t.Fatalf("cancel(job2) = %v, want cancelResultCanceled", got)
+	}
+
+	jm.mu.Lock()
+	gotStatus := jm.jobs["job2"].status
+	_, inByDir := jm.byDir["/dir2"]
+	doneCh := jm.jobs["job2"].done
+	jm.mu.Unlock()
+	if gotStatus != JobStatusCanceled {
+		t.Fatalf("job2 status = %q, want %q", gotStatus, JobStatusCanceled)
+	}
+	if inByDir {
+		t.Fatalf("job2 byDir entry not freed by cancel")
+	}
+	select {
+	case <-doneCh:
+	default:
+		t.Fatalf("job2 done channel not closed by cancel")
+	}
+
+	// job2 must never be dispatched even after job1 finishes.
+	close(block)
+	waitForJobStatus(t, jm, "job1", JobStatusDone, 2*time.Second)
+	time.Sleep(50 * time.Millisecond)
+	if got := jobStatusFor(jm, "job2"); got != JobStatusCanceled {
+		t.Fatalf("job2 status after job1 completed = %q, want %q (must not run)", got, JobStatusCanceled)
+	}
+
+	jm.mu.Lock()
+	_, stillListed := jm.jobs["job2"]
+	inOrderList := false
+	for _, id := range jm.order {
+		if id == "job2" {
+			inOrderList = true
+		}
+	}
+	jm.mu.Unlock()
+	if !stillListed || !inOrderList {
+		t.Fatalf("canceled queued job2 must stay listed until eviction (jobs present=%v, in order=%v)", stillListed, inOrderList)
+	}
+
+	evict(jm, "job2")
+	jm.mu.Lock()
+	_, stillListed = jm.jobs["job2"]
+	inOrderList = false
+	for _, id := range jm.order {
+		if id == "job2" {
+			inOrderList = true
+		}
+	}
+	jm.mu.Unlock()
+	if stillListed || inOrderList {
+		t.Fatalf("job2 not removed from both jobs and order after eviction (jobs present=%v, in order=%v)", stillListed, inOrderList)
+	}
+}
+
+// TestJobManager_CancelRunning verifies that canceling a running job fires
+// its context, which the engine observes as ctx.Err(), and complete() maps
+// that to JobStatusCanceled.
+func TestJobManager_CancelRunning(t *testing.T) {
+	jm := newJobManager(&ctxEngine{}, 1, context.Background())
+	t.Cleanup(jm.Shutdown)
+
+	if _, started := jm.start("job1", "/dir1", transcode.Job{ID: "job1"}, "t1", "s1"); !started {
+		t.Fatalf("start: expected success")
+	}
+	waitForJobStatus(t, jm, "job1", JobStatusRunning, 2*time.Second)
+
+	if got := jm.cancel("job1"); got != cancelResultCanceled {
+		t.Fatalf("cancel(job1) = %v, want cancelResultCanceled", got)
+	}
+
+	waitForJobStatus(t, jm, "job1", JobStatusCanceled, 2*time.Second)
+}
+
+// TestJobManager_CancelUnknownOrFinished verifies cancel's typed result for
+// an unknown id and for a job that has already reached a terminal state.
+func TestJobManager_CancelUnknownOrFinished(t *testing.T) {
+	jm := newJobManager(nil, 0, context.Background())
+
+	if got := jm.cancel("nope"); got != cancelResultNotFound {
+		t.Fatalf("cancel(unknown) = %v, want cancelResultNotFound", got)
+	}
+
+	js, started := jm.start("job1", "/dir1", transcode.Job{}, "", "")
+	if !started {
+		t.Fatalf("start: expected success")
+	}
+	jm.complete(js.id, nil)
+
+	if got := jm.cancel("job1"); got != cancelResultFinished {
+		t.Fatalf("cancel(done) = %v, want cancelResultFinished", got)
+	}
+}
+
+// TestJobManager_DoneFailedRemainListedUntilEviction verifies that jobs
+// reaching JobStatusDone/JobStatusFailed via complete() stay in both jobs and
+// order until the shared eviction runs, matching the queued-cancel path.
+func TestJobManager_DoneFailedRemainListedUntilEviction(t *testing.T) {
+	jm := newJobManager(nil, 0, context.Background())
+
+	jsDone, started := jm.start("done1", "/dirA", transcode.Job{}, "", "")
+	if !started {
+		t.Fatalf("start done1: expected success")
+	}
+	jm.complete(jsDone.id, nil)
+
+	jsFailed, started := jm.start("failed1", "/dirB", transcode.Job{}, "", "")
+	if !started {
+		t.Fatalf("start failed1: expected success")
+	}
+	jm.complete(jsFailed.id, errors.New("boom"))
+
+	for _, id := range []string{"done1", "failed1"} {
+		jm.mu.Lock()
+		_, present := jm.jobs[id]
+		inOrder := false
+		for _, oid := range jm.order {
+			if oid == id {
+				inOrder = true
+			}
+		}
+		jm.mu.Unlock()
+		if !present || !inOrder {
+			t.Fatalf("%s must stay listed until eviction (jobs present=%v, in order=%v)", id, present, inOrder)
+		}
+	}
+
+	evict(jm, "done1")
+	evict(jm, "failed1")
+
+	for _, id := range []string{"done1", "failed1"} {
+		jm.mu.Lock()
+		_, present := jm.jobs[id]
+		inOrder := false
+		for _, oid := range jm.order {
+			if oid == id {
+				inOrder = true
+			}
+		}
+		jm.mu.Unlock()
+		if present || inOrder {
+			t.Fatalf("%s not removed from both jobs and order after eviction (jobs present=%v, in order=%v)", id, present, inOrder)
+		}
+	}
+}

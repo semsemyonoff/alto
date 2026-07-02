@@ -340,13 +340,71 @@ func (jm *jobManager) complete(id string, err error) {
 		// Close any subscribers that slipped in after the fanout goroutine ran closeSubs
 		// but before done was closed (TOCTOU window in subscribe()).
 		js.closeSubs()
-		// Evict the job from the map after 30 minutes so log queries still work briefly.
-		time.AfterFunc(30*time.Minute, func() {
-			jm.mu.Lock()
-			delete(jm.jobs, id)
-			jm.mu.Unlock()
-		})
+		jm.scheduleEviction(id)
 	}
+}
+
+// cancelResult is the outcome of a cancel(id) call.
+type cancelResult int
+
+const (
+	cancelResultCanceled cancelResult = iota
+	cancelResultNotFound
+	cancelResultFinished
+)
+
+// cancel cancels a queued or running job. A queued job is marked canceled
+// immediately and left in order (the dispatcher only ever picks up
+// JobStatusQueued ids, so it is simply skipped); a running job is canceled
+// via its stored context.CancelFunc, and the worker's subsequent complete()
+// call maps the resulting context.Canceled error to JobStatusCanceled.
+// Unknown ids report cancelResultNotFound; already-terminal jobs report
+// cancelResultFinished.
+func (jm *jobManager) cancel(id string) cancelResult {
+	jm.mu.Lock()
+	js, ok := jm.jobs[id]
+	if !ok {
+		jm.mu.Unlock()
+		return cancelResultNotFound
+	}
+	switch js.status {
+	case JobStatusQueued:
+		js.status = JobStatusCanceled
+		delete(jm.byDir, js.dirPath)
+		close(js.done)
+		jm.mu.Unlock()
+		js.closeSubs()
+		jm.scheduleEviction(id)
+		return cancelResultCanceled
+	case JobStatusRunning:
+		cancel := js.cancel
+		jm.mu.Unlock()
+		if cancel != nil {
+			cancel()
+		}
+		return cancelResultCanceled
+	default:
+		jm.mu.Unlock()
+		return cancelResultFinished
+	}
+}
+
+// scheduleEviction removes id from both jobs and order 30 minutes after it
+// reaches a terminal state, keeping it briefly visible to status/log queries
+// while bounding long-run memory growth. Shared by complete() and the
+// queued path of cancel().
+func (jm *jobManager) scheduleEviction(id string) {
+	time.AfterFunc(30*time.Minute, func() {
+		jm.mu.Lock()
+		delete(jm.jobs, id)
+		for i, oid := range jm.order {
+			if oid == id {
+				jm.order = append(jm.order[:i], jm.order[i+1:]...)
+				break
+			}
+		}
+		jm.mu.Unlock()
+	})
 }
 
 // get returns the jobState for a given ID, or false if not found.

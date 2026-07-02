@@ -109,10 +109,10 @@ The redesign comes from the approved Claude Design prototype; a decoded local co
 - Modify: `internal/server/jobs.go`
 - Modify: `internal/server/jobs_test.go`
 
-- [ ] add `cancel(id)`: queued → set status `canceled` (**keep the id in `order`**; dispatcher skips non-`queued`), free `byDir`, close `done`, emit, schedule the shared 30-min eviction; running → invoke stored `cancel()`; return typed result (canceled / not-found / finished)
-- [ ] unify eviction so `complete()` and queued-cancel both remove the id from **both `jobs` and `order`** after 30 min; dispatcher only picks `queued`
-- [ ] write tests: cancel queued (stays listed as `canceled`, never starts, then evicted from both maps), cancel running (ctx fires → canceled), cancel unknown/finished, done/failed jobs remain listed until eviction
-- [ ] run tests — must pass before next task
+- [x] add `cancel(id)`: queued → set status `canceled` (**keep the id in `order`**; dispatcher skips non-`queued`), free `byDir`, close `done`, emit, schedule the shared 30-min eviction; running → invoke stored `cancel()`; return typed result (canceled / not-found / finished)
+- [x] unify eviction so `complete()` and queued-cancel both remove the id from **both `jobs` and `order`** after 30 min; dispatcher only picks `queued`
+- [x] write tests: cancel queued (stays listed as `canceled`, never starts, then evicted from both maps), cancel running (ctx fires → canceled), cancel unknown/finished, done/failed jobs remain listed until eviction
+- [x] run tests — must pass before next task
 
 ### Task 4: Global job event bus (atomic subscribe+snapshot)
 
