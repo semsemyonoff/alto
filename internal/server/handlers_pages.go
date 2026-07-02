@@ -218,6 +218,95 @@ func (s *Server) buildTreeNodes(lib LibraryConfig, dirs []db.Directory) ([]TreeN
 	return nodes, nil
 }
 
+// --- Search result rendering ---
+
+// SearchResultData holds pre-computed data for rendering a single flat search
+// result row (no expand/collapse, no children container).
+type SearchResultData struct {
+	LibraryID    int64
+	Path         string        // relative path within library (e.g. "Jazz/Miles Davis")
+	AbsPath      string        // absolute filesystem path
+	AbsEncoded   string        // URL-encoded absolute path
+	BasenameHTML template.HTML // last path segment, HTML-escaped with the match highlighted
+	IsAudioDir   bool
+	HasCover     bool
+	CodecSummary string
+	CodecClass   string // CSS class for the codec badge
+}
+
+// highlightMatch HTML-escapes name and wraps the first case-insensitive
+// occurrence of q in <mark>. Returns name escaped-but-unwrapped if q is
+// empty or not found.
+func highlightMatch(name, q string) template.HTML {
+	if q != "" {
+		if idx := strings.Index(strings.ToLower(name), strings.ToLower(q)); idx >= 0 {
+			before := template.HTMLEscapeString(name[:idx])
+			match := template.HTMLEscapeString(name[idx : idx+len(q)])
+			after := template.HTMLEscapeString(name[idx+len(q):])
+			return template.HTML(before + "<mark>" + match + "</mark>" + after) //nolint:gosec // components are escaped individually above
+		}
+	}
+	return template.HTML(template.HTMLEscapeString(name)) //nolint:gosec // escaped above
+}
+
+// buildSearchResultData converts a db.Directory and the search query into
+// render data for a single flat search result row.
+func buildSearchResultData(lib LibraryConfig, dir db.Directory, query string) SearchResultData {
+	absPath := filepath.Join(lib.Path, filepath.FromSlash(dir.Path))
+	return SearchResultData{
+		LibraryID:    dir.LibraryID,
+		Path:         dir.Path,
+		AbsPath:      absPath,
+		AbsEncoded:   url.QueryEscape(absPath),
+		BasenameHTML: highlightMatch(filepath.Base(dir.Path), query),
+		IsAudioDir:   dir.IsAudio,
+		HasCover:     dir.HasCover,
+		CodecSummary: dir.CodecSummary,
+		CodecClass:   codecClass(dir.CodecSummary),
+	}
+}
+
+// searchResultTmpl is the inline template for a single flat search result row.
+// Unlike treeNodeTmpl it has no expand toggle or children container, since
+// search results are a flat list.
+var searchResultTmpl = template.Must(template.New("search_result").Parse(`<div class="tree-node search-result" data-path="{{.Path}}">
+  <div class="tree-node-row" title="{{.Path}}">
+    <span class="tree-toggle-placeholder"></span>
+    <span class="tree-icon">{{if .HasCover}}🎵{{else}}📁{{end}}</span>
+    {{if .IsAudioDir}}<span class="tree-label tree-label-link"
+          hx-get="/dir?path={{.AbsPath | urlquery}}"
+          hx-target="#content-area"
+          hx-select="#dir-content"
+          hx-swap="innerHTML"
+          hx-push-url="true"
+          onclick="event.stopPropagation(); document.querySelectorAll('.tree-node-row').forEach(function(el){el.classList.remove('active')}); this.closest('.tree-node-row').classList.add('active')">{{.BasenameHTML}}</span>{{else}}<span class="tree-label tree-label-disabled">{{.BasenameHTML}}</span>{{end}}
+    {{if .CodecSummary}}<span class="codec-badge {{.CodecClass}}">{{.CodecSummary}}</span>{{end}}
+  </div>
+</div>
+`))
+
+// searchEmptyTmpl renders the "no matches" empty state for a search query.
+var searchEmptyTmpl = template.Must(template.New("search_empty").Parse(
+	`<div class="tree-empty">No directories match <b>{{.}}</b>.</div>`))
+
+// renderSearchResults renders search results as flat HTML row fragments, or
+// the empty-state message if there are none.
+func renderSearchResults(nodes []SearchResultData, query string) (template.HTML, error) {
+	var buf bytes.Buffer
+	if len(nodes) == 0 {
+		if err := searchEmptyTmpl.Execute(&buf, query); err != nil {
+			return "", err
+		}
+		return template.HTML(buf.String()), nil
+	}
+	for _, nd := range nodes {
+		if err := searchResultTmpl.Execute(&buf, nd); err != nil {
+			return "", err
+		}
+	}
+	return template.HTML(buf.String()), nil
+}
+
 // findLibConfigByID returns the LibraryConfig matching id, or zero value + false.
 func findLibConfigByID(cfg Config, id int64) (LibraryConfig, bool) {
 	for _, l := range cfg.Libraries {

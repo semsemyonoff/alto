@@ -44,8 +44,8 @@ type Config struct {
 
 // ScanEvent represents a scan lifecycle event broadcast over SSE.
 type ScanEvent struct {
-	Type       string `json:"type"`                 // "started", "progress", "complete", "error", "idle"
-	Message    string `json:"message,omitempty"`     // error message if Type == "error"
+	Type       string `json:"type"`              // "started", "progress", "complete", "error", "idle"
+	Message    string `json:"message,omitempty"` // error message if Type == "error"
 	Added      int    `json:"added,omitempty"`
 	Removed    int    `json:"removed,omitempty"`
 	Discovered int    `json:"discovered,omitempty"` // running total of directories discovered so far, Type == "progress"
@@ -256,6 +256,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /api/libraries", s.handleLibraries)
 	s.mux.HandleFunc("GET /api/tree/{libraryID}", s.handleTree)
 	s.mux.HandleFunc("GET /api/tree/{libraryID}/children", s.handleTreeChildren)
+	s.mux.HandleFunc("GET /api/tree/{libraryID}/search", s.handleTreeSearch)
 	s.mux.HandleFunc("GET /api/dir", s.handleDir)
 	s.mux.HandleFunc("POST /api/scan", s.handleScan)
 	s.mux.HandleFunc("GET /api/scan/status", s.handleScanStatus)

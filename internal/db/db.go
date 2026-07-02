@@ -472,6 +472,24 @@ func (db *DB) GetDirectoryChildren(libraryID int64, parentPath string) ([]Direct
 	return children, nil
 }
 
+// GetDirectorySearch returns directories in a library whose path contains q,
+// case-insensitively, ordered by path. Intermediate (non-audio) directories
+// are included so a match on a parent segment still surfaces its children.
+func (db *DB) GetDirectorySearch(libraryID int64, q string) ([]Directory, error) {
+	escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(q)
+	rows, err := db.sql.Query(
+		`SELECT id, library_id, path, has_cover, cover_path, codec_summary, is_audio
+		 FROM directories WHERE library_id=? AND path LIKE ? ESCAPE '\' ORDER BY path`,
+		libraryID, "%"+escaped+"%",
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	return scanDirectories(rows)
+}
+
 // GetDirectoryByPath returns a single directory by library and path.
 func (db *DB) GetDirectoryByPath(libraryID int64, path string) (*Directory, error) {
 	var d Directory

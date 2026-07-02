@@ -30,9 +30,23 @@ export function treeURL(libraryId: number): string {
   return `/api/tree/${libraryId}/children`
 }
 
+export function searchURL(libraryId: number, q: string): string {
+  return `/api/tree/${libraryId}/search?q=${encodeURIComponent(q)}`
+}
+
 /** Loads a library's root tree fragment into #tree-root via the bundled htmx instance. */
 function loadTree(libraryId: number): void {
   window.htmx?.ajax('GET', treeURL(libraryId), { target: '#tree-root', swap: 'innerHTML' })
+}
+
+/** Loads search results for q into #tree-root; an empty q restores the root tree. */
+function loadSearch(libraryId: number, q: string): void {
+  const trimmed = q.trim()
+  if (!trimmed) {
+    loadTree(libraryId)
+    return
+  }
+  window.htmx?.ajax('GET', searchURL(libraryId, trimmed), { target: '#tree-root', swap: 'innerHTML' })
 }
 
 /** Reads the library menu's initial selection from the wrapping element's data attributes. */
@@ -78,6 +92,7 @@ export function altoLibMenu(): LibMenuData {
       window.altoLibraryMenu = {
         refreshStatus: () => void this.load(),
         reloadTree: () => loadTree(this.selectedId),
+        search: (q) => loadSearch(this.selectedId, q),
       }
 
       void this.load()
@@ -110,6 +125,7 @@ declare global {
     altoLibraryMenu?: {
       refreshStatus(): void
       reloadTree(): void
+      search(q: string): void
     }
   }
 }

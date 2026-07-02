@@ -319,6 +319,52 @@ func TestGetDirectoryChildren(t *testing.T) {
 	}
 }
 
+func TestGetDirectorySearch(t *testing.T) {
+	db := openMem(t)
+
+	libID, _ := db.UpsertLibrary("lib", "/lib")
+	other, _ := db.UpsertLibrary("other", "/other")
+
+	all := []string{
+		"Artists",
+		"Artists/Beatles",
+		"Artists/Beatles/Abbey Road",
+		"Artists/Rolling Stones",
+		"Compilations",
+	}
+	for _, p := range all {
+		_, _ = db.UpsertDirectory(libID, p, "FLAC", false, "")
+	}
+	_, _ = db.UpsertDirectory(other, "Beatles Tribute", "FLAC", false, "")
+
+	results, err := db.GetDirectorySearch(libID, "beatles")
+	if err != nil {
+		t.Fatalf("GetDirectorySearch: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 case-insensitive matches, got %d: %v", len(results), childPaths(results))
+	}
+	if results[0].Path != "Artists/Beatles" || results[1].Path != "Artists/Beatles/Abbey Road" {
+		t.Fatalf("unexpected order/content: %v", childPaths(results))
+	}
+
+	noMatch, err := db.GetDirectorySearch(libID, "nonexistent")
+	if err != nil {
+		t.Fatalf("GetDirectorySearch (no match): %v", err)
+	}
+	if len(noMatch) != 0 {
+		t.Fatalf("expected 0 matches, got %d: %v", len(noMatch), childPaths(noMatch))
+	}
+
+	empty, err := db.GetDirectorySearch(libID, "")
+	if err != nil {
+		t.Fatalf("GetDirectorySearch (empty query): %v", err)
+	}
+	if len(empty) != len(all) {
+		t.Fatalf("expected empty query to match all %d dirs, got %d", len(all), len(empty))
+	}
+}
+
 func TestHasDirectChildDirectory(t *testing.T) {
 	db := openMem(t)
 	libID, _ := db.UpsertLibrary("lib", "/lib")

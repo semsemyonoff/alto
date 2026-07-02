@@ -321,10 +321,10 @@ The redesign comes from the approved Claude Design prototype; a decoded local co
 **Files:**
 - Modify: `internal/server/handlers_pages.go` (or `handlers_api.go`), `internal/server/server.go`, `web/templates/index.html` / `web/frontend/src/`, corresponding `*_test.go`
 
-- [ ] add `GET /api/tree/{libraryID}/search?q=` → flat list of matching dirs (case-insensitive contains, library-scoped); wire the search input + render results with highlight
-- [ ] write tests (match, no-match, empty query, scoping)
-- [ ] run tests — must pass before next task
-- [ ] NOTE: optional for v1; nothing else depends on it — skip if descoping.
+- [x] add `GET /api/tree/{libraryID}/search?q=` → flat list of matching dirs (case-insensitive contains, library-scoped); wire the search input + render results with highlight
+- [x] write tests (match, no-match, empty query, scoping)
+- [x] run tests — must pass before next task
+- [x] NOTE: optional for v1; nothing else depends on it — skip if descoping. (implemented rather than skipped)
 
 ### Task 22: Verify acceptance criteria
 - [ ] verify Overview requirements (queue: pool/queued/cancel/list/global SSE; UI: shell/tree/stage/dock/queue/standby/scan; one shell on every screen)

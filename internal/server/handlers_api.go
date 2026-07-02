@@ -141,6 +141,68 @@ func (s *Server) handleTreeChildren(w http.ResponseWriter, r *http.Request) {
 	_, _ = fmt.Fprint(w, string(html))
 }
 
+// handleTreeSearch returns directories in a library whose path contains q
+// (case-insensitive) as a flat HTML partial for HTMX. An empty q re-renders
+// the library's root tree so clearing the search box restores the normal view.
+// GET /api/tree/{libraryID}/search?q=
+func (s *Server) handleTreeSearch(w http.ResponseWriter, r *http.Request) {
+	libraryID, err := strconv.ParseInt(r.PathValue("libraryID"), 10, 64)
+	if err != nil || libraryID <= 0 {
+		http.Error(w, "invalid library_id", http.StatusBadRequest)
+		return
+	}
+
+	libCfg, ok := findLibConfigByID(s.cfg, libraryID)
+	if !ok {
+		libCfg = LibraryConfig{ID: libraryID}
+	}
+
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	if q == "" {
+		children, err := s.db.GetDirectoryChildren(libraryID, "")
+		if err != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		nodes, err := s.buildTreeNodes(libCfg, children)
+		if err != nil {
+			slog.Error("handleTreeSearch: buildTreeNodes", "err", err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		html, err := renderTreeNodes(nodes)
+		if err != nil {
+			slog.Error("handleTreeSearch: renderTreeNodes", "err", err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = fmt.Fprint(w, string(html))
+		return
+	}
+
+	dirs, err := s.db.GetDirectorySearch(libraryID, q)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	nodes := make([]SearchResultData, len(dirs))
+	for i, d := range dirs {
+		nodes[i] = buildSearchResultData(libCfg, d, q)
+	}
+
+	html, err := renderSearchResults(nodes, q)
+	if err != nil {
+		slog.Error("handleTreeSearch: renderSearchResults", "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = fmt.Fprint(w, string(html))
+}
+
 // handleDir returns directory details and tracks for the given absolute path.
 // GET /api/dir?path=ABSOLUTE_PATH
 func (s *Server) handleDir(w http.ResponseWriter, r *http.Request) {

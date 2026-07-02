@@ -4,6 +4,7 @@ import { reinitAlpineOnSwap } from './alpine-swap'
 import { altoDock } from './dock'
 import { altoLibMenu } from './libmenu'
 import { altoQueue } from './queue'
+import { altoTreeSearch } from './treesearch'
 import { initSidebarResizer } from './ui/resizer'
 import './styles/index.css'
 
@@ -20,6 +21,7 @@ window.htmx = htmx
 Alpine.data('altoDock', altoDock)
 Alpine.data('altoLibMenu', altoLibMenu)
 Alpine.data('altoQueue', altoQueue)
+Alpine.data('altoTreeSearch', altoTreeSearch)
 
 document.addEventListener('htmx:afterSwap', (event) => {
   reinitAlpineOnSwap(Alpine, (event as CustomEvent<{ target: EventTarget }>).detail.target)

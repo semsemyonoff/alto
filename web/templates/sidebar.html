@@ -1,8 +1,9 @@
 {{define "sidebar"}}
 <div class="tree-section">
   <div class="tree-section-header">Directories</div>
-  <div class="tree-search">
-    <input id="tree-search-input" type="text" placeholder="Search directories…" autocomplete="off" spellcheck="false">
+  <div class="tree-search" x-data="altoTreeSearch()">
+    <input id="tree-search-input" type="text" placeholder="Search directories…" autocomplete="off" spellcheck="false"
+           x-on:input.debounce.250ms="onInput($event.target.value)">
     <span class="tree-search-icon" aria-hidden="true"></span>
   </div>
   <div id="tree-root">

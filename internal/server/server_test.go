@@ -282,6 +282,139 @@ func TestHandleTreeChildren_NoParent(t *testing.T) {
 	}
 }
 
+// --- GET /api/tree/{libraryID}/search ---
+
+func TestHandleTreeSearch_Match(t *testing.T) {
+	srv, database, _ := newTestServer(t)
+	libID := srv.cfg.Libraries[0].ID
+
+	database.UpsertDirectory(libID, "Jazz", "FLAC", false, "")            //nolint:errcheck
+	database.UpsertDirectory(libID, "Jazz/Miles Davis", "FLAC", true, "") //nolint:errcheck
+	database.UpsertDirectory(libID, "Jazz/Coltrane", "FLAC", true, "")    //nolint:errcheck
+	database.UpsertDirectory(libID, "Rock", "MP3", false, "")             //nolint:errcheck
+
+	reqURL := apiURL("/api/tree/"+itoa(libID)+"/search", map[string]string{"q": "miles"})
+	req := httptest.NewRequest(http.MethodGet, reqURL, nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "<mark>Miles</mark>") {
+		t.Errorf("response should highlight the match, got: %s", body)
+	}
+	if strings.Contains(body, "Coltrane") || strings.Contains(body, ">Rock<") {
+		t.Errorf("response should only contain matching directories, got: %s", body)
+	}
+}
+
+func TestHandleTreeSearch_CaseInsensitive(t *testing.T) {
+	srv, database, _ := newTestServer(t)
+	libID := srv.cfg.Libraries[0].ID
+
+	database.UpsertDirectory(libID, "Jazz/Miles Davis", "FLAC", true, "") //nolint:errcheck
+
+	reqURL := apiURL("/api/tree/"+itoa(libID)+"/search", map[string]string{"q": "MILES"})
+	req := httptest.NewRequest(http.MethodGet, reqURL, nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "Miles Davis") {
+		t.Errorf("expected case-insensitive match, got: %s", w.Body.String())
+	}
+}
+
+func TestHandleTreeSearch_NoMatch(t *testing.T) {
+	srv, database, _ := newTestServer(t)
+	libID := srv.cfg.Libraries[0].ID
+
+	database.UpsertDirectory(libID, "Jazz", "FLAC", false, "") //nolint:errcheck
+
+	reqURL := apiURL("/api/tree/"+itoa(libID)+"/search", map[string]string{"q": "nonexistent"})
+	req := httptest.NewRequest(http.MethodGet, reqURL, nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "tree-empty") || !strings.Contains(body, "nonexistent") {
+		t.Errorf("expected empty-state message naming the query, got: %s", body)
+	}
+}
+
+func TestHandleTreeSearch_EmptyQueryReturnsRootTree(t *testing.T) {
+	srv, database, _ := newTestServer(t)
+	libID := srv.cfg.Libraries[0].ID
+
+	database.UpsertDirectory(libID, "Jazz", "FLAC", false, "")            //nolint:errcheck
+	database.UpsertDirectory(libID, "Jazz/Miles Davis", "FLAC", true, "") //nolint:errcheck
+	database.UpsertDirectory(libID, "Rock", "MP3", false, "")             //nolint:errcheck
+
+	req := httptest.NewRequest(http.MethodGet, "/api/tree/"+itoa(libID)+"/search", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "Jazz") || !strings.Contains(body, "Rock") {
+		t.Errorf("empty query should render the root tree, got: %s", body)
+	}
+	// A nested directory should not appear at root level.
+	if strings.Contains(body, "Miles Davis") {
+		t.Errorf("empty query should not include nested directories, got: %s", body)
+	}
+}
+
+func TestHandleTreeSearch_ScopedToLibrary(t *testing.T) {
+	srv, database, _ := newTestServer(t)
+	libID := srv.cfg.Libraries[0].ID
+
+	otherLibID, err := database.UpsertLibrary("OtherLib", t.TempDir())
+	if err != nil {
+		t.Fatalf("UpsertLibrary: %v", err)
+	}
+
+	database.UpsertDirectory(libID, "Jazz/Miles Davis", "FLAC", true, "")           //nolint:errcheck
+	database.UpsertDirectory(otherLibID, "Jazz/Miles Davis Live", "FLAC", true, "") //nolint:errcheck
+
+	reqURL := apiURL("/api/tree/"+itoa(libID)+"/search", map[string]string{"q": "miles"})
+	req := httptest.NewRequest(http.MethodGet, reqURL, nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if strings.Contains(body, "Miles Davis Live") {
+		t.Errorf("search should be scoped to the requested library, got: %s", body)
+	}
+	if !strings.Contains(body, "Miles Davis") {
+		t.Errorf("expected a match from the target library, got: %s", body)
+	}
+}
+
+func TestHandleTreeSearch_InvalidLibraryID(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/tree/abc/search", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d", w.Code)
+	}
+}
+
 // --- GET /api/dir ---
 
 func TestHandleDir(t *testing.T) {
