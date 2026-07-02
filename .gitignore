@@ -1,1 +1,3 @@
 .ralphex/
+node_modules/
+web/static/dist/

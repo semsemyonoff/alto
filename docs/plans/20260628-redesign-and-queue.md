@@ -172,12 +172,12 @@ The redesign comes from the approved Claude Design prototype; a decoded local co
 - Create: `web/frontend/package.json`, `vite.config.ts`, `tsconfig.json`, `postcss.config.js`, `src/main.ts`, `src/main.test.ts`
 - Modify: `.gitignore`
 
-- [ ] init npm with `vite`, `typescript`, `alpinejs`, `htmx.org`, `postcss`, `postcss-nesting`, `autoprefixer`, `vitest`
-- [ ] Vite config: `build.manifest=true`, `outDir=../static/dist`, `base=/static/dist/`, main entry input
-- [ ] `main.ts`: bootstrap Alpine + HTMX, import CSS entry, **re-init Alpine on `htmx:afterSwap`**
-- [ ] add `build`/`dev`/`test` scripts; gitignore `node_modules` and `web/static/dist`
-- [ ] write a Vitest test for the `htmx:afterSwap` re-init helper (+ sanity)
-- [ ] run `npm run build` and `npm run test` — must pass before next task
+- [x] init npm with `vite`, `typescript`, `alpinejs`, `htmx.org`, `postcss`, `postcss-nesting`, `autoprefixer`, `vitest`
+- [x] Vite config: `build.manifest=true`, `outDir=../static/dist`, `base=/static/dist/`, main entry input
+- [x] `main.ts`: bootstrap Alpine + HTMX, import CSS entry, **re-init Alpine on `htmx:afterSwap`**
+- [x] add `build`/`dev`/`test` scripts; gitignore `node_modules` and `web/static/dist`
+- [x] write a Vitest test for the `htmx:afterSwap` re-init helper (+ sanity)
+- [x] run `npm run build` and `npm run test` — must pass before next task
 
 ### Task 10: templateEngine rework + Vite manifest integration (test-safe)
 

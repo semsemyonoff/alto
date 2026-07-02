@@ -1,0 +1,25 @@
+{
+  "name": "alto-frontend",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "alpinejs": "^3.14.9",
+    "htmx.org": "^2.0.4"
+  },
+  "devDependencies": {
+    "@types/alpinejs": "^3.13.11",
+    "autoprefixer": "^10.4.20",
+    "jsdom": "^25.0.1",
+    "postcss": "^8.4.49",
+    "postcss-nesting": "^13.0.1",
+    "typescript": "^5.7.3",
+    "vite": "^6.0.7",
+    "vitest": "^2.1.8"
+  }
+}
