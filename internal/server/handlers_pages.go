@@ -17,37 +17,71 @@ import (
 	"github.com/semsemyonoff/ALTO/internal/db"
 )
 
-// templateEngine loads and caches HTML templates from a directory.
-// Templates are loaded lazily on first render.
+// sharedTemplateFiles are partials included (if present) alongside every
+// requested page, so each page gets its own isolated template set built from
+// base.html + shared partials + the page itself. This keeps two pages that
+// each define a block of the same name (e.g. "content") from colliding, since
+// they're parsed into separate *template.Template groups rather than one glob.
+var sharedTemplateFiles = []string{"base.html", "sidebar.html"}
+
+// templateEngine loads and caches HTML templates from a directory, one
+// isolated *template.Template group per requested page name. Templates are
+// loaded lazily on first render.
 type templateEngine struct {
-	mu   sync.RWMutex
-	dir  string
-	tmpl *template.Template
+	mu     sync.RWMutex
+	dir    string
+	assets assetResolver
+	pages  map[string]*template.Template
+}
+
+// load returns the cached template group for name, parsing it if needed.
+func (te *templateEngine) load(name string) (*template.Template, error) {
+	te.mu.RLock()
+	if t, ok := te.pages[name]; ok {
+		te.mu.RUnlock()
+		return t, nil
+	}
+	te.mu.RUnlock()
+
+	te.mu.Lock()
+	defer te.mu.Unlock()
+	// Double-checked load.
+	if t, ok := te.pages[name]; ok {
+		return t, nil
+	}
+
+	var files []string
+	for _, shared := range sharedTemplateFiles {
+		p := filepath.Join(te.dir, shared)
+		if _, err := os.Stat(p); err == nil {
+			files = append(files, p)
+		}
+	}
+	files = append(files, filepath.Join(te.dir, name))
+
+	t, err := template.New(name).Funcs(template.FuncMap{
+		"viteTags":  te.assets.Tags,
+		"viteAsset": te.assets.Asset,
+	}).ParseFiles(files...)
+	if err != nil {
+		return nil, err
+	}
+
+	if te.pages == nil {
+		te.pages = make(map[string]*template.Template)
+	}
+	te.pages[name] = t
+	return t, nil
 }
 
 // render executes the named template with data, writing to w.
-// If templates have not been loaded yet, it attempts to load them first.
+// If the template group has not been loaded yet, it attempts to load it first.
 func (te *templateEngine) render(w http.ResponseWriter, name string, data any) {
-	te.mu.RLock()
-	tmpl := te.tmpl
-	te.mu.RUnlock()
-
-	if tmpl == nil {
-		te.mu.Lock()
-		// Double-checked load.
-		if te.tmpl == nil {
-			pattern := filepath.Join(te.dir, "*.html")
-			t, err := template.ParseGlob(pattern)
-			if err != nil {
-				te.mu.Unlock()
-				slog.Warn("template load failed", "dir", te.dir, "err", err)
-				http.Error(w, "templates not available", http.StatusInternalServerError)
-				return
-			}
-			te.tmpl = t
-		}
-		tmpl = te.tmpl
-		te.mu.Unlock()
+	tmpl, err := te.load(name)
+	if err != nil {
+		slog.Warn("template load failed", "dir", te.dir, "name", name, "err", err)
+		http.Error(w, "templates not available", http.StatusInternalServerError)
+		return
 	}
 
 	var buf bytes.Buffer

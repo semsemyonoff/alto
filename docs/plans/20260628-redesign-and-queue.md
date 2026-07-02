@@ -186,12 +186,12 @@ The redesign comes from the approved Claude Design prototype; a decoded local co
 - Create: `internal/server/assets.go`, `internal/server/assets_test.go`, `web/templates/sidebar.html` (extract `{{define "sidebar"}}` out of `index.html`)
 - Modify: `web/templates/base.html`, `web/templates/index.html` (drop its local `sidebar` def), `internal/server/server.go`
 
-- [ ] extract the `sidebar` block into a shared `sidebar.html` partial so both pages get it once `directory.html` stops duplicating the shell
-- [ ] rework `templateEngine`: register asset funcs (`viteTags`, `viteAsset`) **before** parsing; parse `base.html` + shared partials (`sidebar.html`) + the requested page via `ParseFiles`, caching one set per page name (isolates each page's `content`, keeps `sidebar` available)
-- [ ] asset resolver with an **explicit mode** (prod manifest / `ALTO_VITE_DEV` dev / test-stub via constructor): `viteTags("src/main.ts")` returns `template.HTML` head tags; prod **fails loudly** if the manifest is missing; test-stub returns placeholders so real-template Go tests pass without a built `dist`
-- [ ] use `{{ viteTags "src/main.ts" }}` in `base.html` head
-- [ ] write tests: manifest parse → hashed tags; dev mode emits `@vite/client`; prod missing-manifest errors; test-stub renders; existing real-template tests still pass; `/` and `/dir` both render `sidebar` without collision
-- [ ] run tests + `npm run build` — must pass before next task
+- [x] extract the `sidebar` block into a shared `sidebar.html` partial so both pages get it once `directory.html` stops duplicating the shell
+- [x] rework `templateEngine`: register asset funcs (`viteTags`, `viteAsset`) **before** parsing; parse `base.html` + shared partials (`sidebar.html`) + the requested page via `ParseFiles`, caching one set per page name (isolates each page's `content`, keeps `sidebar` available)
+- [x] asset resolver with an **explicit mode** (prod manifest / `ALTO_VITE_DEV` dev / test-stub via constructor): `viteTags("src/main.ts")` returns `template.HTML` head tags; prod **fails loudly** if the manifest is missing; test-stub returns placeholders so real-template Go tests pass without a built `dist`
+- [x] use `{{ viteTags "src/main.ts" }}` in `base.html` head
+- [x] write tests: manifest parse → hashed tags; dev mode emits `@vite/client`; prod missing-manifest errors; test-stub renders; existing real-template tests still pass; `/` and `/dir` both render `sidebar` without collision
+- [x] run tests + `npm run build` — must pass before next task
 
 ### Task 11: Build pipeline + retire unreferenced asset
 

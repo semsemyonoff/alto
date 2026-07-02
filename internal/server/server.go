@@ -156,7 +156,7 @@ func NewWithEngine(database *db.DB, scanner LibraryScanner, engine TranscodeEngi
 		engine:         engine,
 		cfg:            cfg,
 		mux:            http.NewServeMux(),
-		tmpl:           templateEngine{dir: tmplDir},
+		tmpl:           templateEngine{dir: tmplDir, assets: newAssetResolver(staticDir)},
 		jobs:           newJobManager(engine, cfg.Workers, shutdownCtx),
 		staticDir:      staticDir,
 		shutdownCtx:    shutdownCtx,
