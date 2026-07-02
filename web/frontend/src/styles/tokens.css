@@ -1,0 +1,22 @@
+:root {
+  --corpus-0: #15110c;
+  --corpus-1: #1c1813;
+  --corpus-2: #241f18;
+  --corpus-3: #2d271f;
+  --hair: rgba(255, 247, 233, 0.06);
+  --hair-strong: rgba(255, 247, 233, 0.1);
+  --wood-a: #432f1c;
+  --wood-b: #21160c;
+  --ink: #ece5d8;
+  --ink-dim: #a89c89;
+  --ink-mute: #776d5d;
+  --teal: #3ad4c4;
+  --green: #6edd81;
+  --cyan: #1ec2ec;
+  --danger: #d2725f;
+  --glow: 0 0 0 1px rgba(58, 212, 196, 0.35), 0 0 18px -2px rgba(58, 212, 196, 0.45);
+  --grad: linear-gradient(90deg, var(--green), var(--teal), var(--cyan));
+  --fd: "Space Grotesk", system-ui, sans-serif;
+  --fb: "Manrope", system-ui, sans-serif;
+  --fm: "IBM Plex Mono", ui-monospace, monospace;
+}

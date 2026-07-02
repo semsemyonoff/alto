@@ -212,10 +212,10 @@ The redesign comes from the approved Claude Design prototype; a decoded local co
 - Create: `web/frontend/src/styles/tokens.css`, `base.css`, `index.css`
 - Modify: `web/frontend/src/main.ts`
 
-- [ ] extract `:root` vars, fonts (Space Grotesk / Manrope / IBM Plex Mono), body background, resets from `docs/prototype/ALTO-prototype.html`
-- [ ] confirm accents match `static/logo.svg` (green `#6EDD81`, teal `#3AD4C4`, cyan `#1EC2EC`)
-- [ ] import CSS index from `main.ts`; verify PostCSS nesting + autoprefixer run; hashed CSS in manifest
-- [ ] run `npm run build` — must pass before next task
+- [x] extract `:root` vars, fonts (Space Grotesk / Manrope / IBM Plex Mono), body background, resets from `docs/prototype/ALTO-prototype.html`
+- [x] confirm accents match `static/logo.svg` (green `#6EDD81`, teal `#3AD4C4`, cyan `#1EC2EC`)
+- [x] import CSS index from `main.ts`; verify PostCSS nesting + autoprefixer run; hashed CSS in manifest
+- [x] run `npm run build` — must pass before next task
 
 ### Task 13: Unify `directory.html` onto the `base.html` shell
 

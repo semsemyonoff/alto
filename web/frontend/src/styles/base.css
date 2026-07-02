@@ -1,0 +1,29 @@
+@import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=Manrope:wght@400;500;600;700&display=swap");
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  font-family: var(--fb);
+  color: var(--ink);
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+  background: radial-gradient(120% 80% at 72% -10%, rgba(58, 212, 196, 0.05), transparent 60%),
+    radial-gradient(90% 70% at 8% 112%, rgba(110, 221, 129, 0.04), transparent 55%), var(--corpus-0);
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  border: none;
+  background: none;
+  cursor: pointer;
+}
