@@ -466,6 +466,60 @@ func TestHandleDirPage_RealTemplates_NoCollisionWithIndex(t *testing.T) {
 	}
 }
 
+// --- Task 16: stage rebuild — aggregates, codec pill, tech toggle ---
+
+// TestHandleDirPage_RealTemplates_StageAggregatesAndToggle verifies the
+// rebuilt stage renders the total duration/size subline, a large codec pill,
+// and the Alpine "show technical" toggle wired to the tech-flagged columns.
+func TestHandleDirPage_RealTemplates_StageAggregatesAndToggle(t *testing.T) {
+	srv, database, libDir := newTestServerWithRealTemplates(t)
+	libID := srv.cfg.Libraries[0].ID
+
+	absPath := filepath.Join(libDir, "Jazz")
+	mkdirAll(t, absPath)
+	dirID, err := database.UpsertDirectory(libID, "Jazz", "FLAC", false, "")
+	if err != nil {
+		t.Fatalf("UpsertDirectory: %v", err)
+	}
+	if err := database.UpsertTrack(db.Track{
+		DirectoryID: dirID, Filename: "01_so_what.flac", Codec: "flac",
+		Bitrate: 900_000, Duration: 565.0, SampleRate: 44100, Channels: 2, Size: 63_504_000,
+	}); err != nil {
+		t.Fatalf("UpsertTrack: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, apiURL("/dir", map[string]string{"path": absPath}), nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+
+	if !strings.Contains(body, "codec-badge-lg") {
+		t.Errorf("stage header should render a large codec pill; got:\n%s", body)
+	}
+	if !strings.Contains(body, fmtDuration(565.0)) {
+		t.Errorf("stage subline should show the total duration; got:\n%s", body)
+	}
+	if !strings.Contains(body, fmtSize(63_504_000)) {
+		t.Errorf("stage subline should show the total size; got:\n%s", body)
+	}
+	if !strings.Contains(body, `x-data="{ showTech: false }"`) {
+		t.Errorf("tracks section should be an Alpine island toggling technical columns; got:\n%s", body)
+	}
+	if !strings.Contains(body, `class="tech-toggle"`) {
+		t.Errorf("stage should render the show-technical toggle control; got:\n%s", body)
+	}
+	if !strings.Contains(body, `:class="{ 'hide-tech': !showTech }"`) {
+		t.Errorf("tracks table should bind hide-tech to the toggle state; got:\n%s", body)
+	}
+	if !strings.Contains(body, `class="col-bitrate tech"`) {
+		t.Errorf("bitrate column should be flagged technical; got:\n%s", body)
+	}
+}
+
 func TestHandleDirPage_ContentTypeHTML(t *testing.T) {
 	srv, database, libDir := newTestServerWithDirTemplate(t)
 	libID := srv.cfg.Libraries[0].ID
@@ -629,6 +683,38 @@ func TestBuildDirPageData(t *testing.T) {
 	}
 	if data.PathEncoded == "" {
 		t.Error("PathEncoded should not be empty")
+	}
+}
+
+func TestBuildDirPageData_Aggregates(t *testing.T) {
+	lib := LibraryConfig{ID: 1, Name: "Music", Path: "/music"}
+	dir := &db.Directory{ID: 5, LibraryID: 1, Path: "Jazz/Kind of Blue", CodecSummary: "FLAC"}
+	tracks := []db.Track{
+		{DirectoryID: 5, Filename: "01_so_what.flac", Codec: "flac", Duration: 565.0, Size: 63504000},
+		{DirectoryID: 5, Filename: "02_freddie_freeloader.flac", Codec: "flac", Duration: 590.0, Size: 70125000},
+	}
+
+	data := buildDirPageData(lib, dir, tracks, "/music/Jazz/Kind of Blue")
+
+	if want := fmtDuration(565.0 + 590.0); data.TotalDuration != want {
+		t.Errorf("TotalDuration want %q, got %q", want, data.TotalDuration)
+	}
+	if want := fmtSize(63504000 + 70125000); data.TotalSize != want {
+		t.Errorf("TotalSize want %q, got %q", want, data.TotalSize)
+	}
+}
+
+func TestBuildDirPageData_NoTracksTotalsAreDash(t *testing.T) {
+	lib := LibraryConfig{ID: 1, Name: "Music", Path: "/music"}
+	dir := &db.Directory{ID: 5, LibraryID: 1, Path: "Empty"}
+
+	data := buildDirPageData(lib, dir, nil, "/music/Empty")
+
+	if data.TotalDuration != "–" {
+		t.Errorf("TotalDuration want %q, got %q", "–", data.TotalDuration)
+	}
+	if data.TotalSize != "–" {
+		t.Errorf("TotalSize want %q, got %q", "–", data.TotalSize)
 	}
 }
 

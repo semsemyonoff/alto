@@ -1,0 +1,272 @@
+.dir-page {
+  max-width: 1100px;
+}
+
+.dir-header {
+  display: flex;
+  gap: 26px;
+  align-items: flex-end;
+  margin-bottom: 30px;
+}
+
+.dir-cover {
+  width: 160px;
+  height: 160px;
+  object-fit: cover;
+  border-radius: 10px;
+  flex-shrink: 0;
+  background: var(--corpus-2);
+  box-shadow: 0 18px 40px -16px #000, inset 0 0 0 1px var(--hair-strong);
+}
+
+.dir-meta {
+  flex: 1;
+  min-width: 0;
+  padding-bottom: 6px;
+}
+
+.dir-breadcrumb {
+  font-family: var(--fm);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-mute);
+  margin-bottom: 12px;
+}
+
+.dir-title {
+  font-family: var(--fd);
+  font-weight: 600;
+  font-size: 30px;
+  letter-spacing: 0.01em;
+  color: #f4efe4;
+  text-shadow: 0 1px 0 #000;
+  line-height: 1.15;
+  margin-bottom: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dir-subline {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  color: var(--ink-dim);
+  font-size: 13px;
+  flex-wrap: wrap;
+}
+
+.dir-sep {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--ink-mute);
+  flex-shrink: 0;
+}
+
+.dir-actions {
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.codec-badge-lg {
+  font-size: 12px;
+  padding: 4px 11px;
+  border-radius: 6px;
+}
+
+.dir-empty {
+  padding: 32px 0;
+  color: var(--ink-mute);
+  font-size: 14px;
+  line-height: 2;
+}
+
+/* Tracks table */
+
+.tracks-section {
+  overflow-x: auto;
+}
+
+.tracks-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.tracks-toolbar-label {
+  font-family: var(--fm);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-mute);
+}
+
+.tech-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--ink-mute);
+  font-family: var(--fm);
+  letter-spacing: 0.04em;
+}
+
+.tech-toggle-switch {
+  width: 30px;
+  height: 16px;
+  border-radius: 999px;
+  background: var(--corpus-3);
+  position: relative;
+  border: 1px solid var(--hair-strong);
+  transition: 0.18s;
+  flex-shrink: 0;
+}
+
+.tech-toggle-switch::after {
+  content: "";
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--ink-mute);
+  transition: 0.18s;
+}
+
+.tech-toggle.on {
+  color: var(--ink-dim);
+}
+
+.tech-toggle.on .tech-toggle-switch {
+  background: rgba(58, 212, 196, 0.25);
+  border-color: rgba(58, 212, 196, 0.4);
+}
+
+.tech-toggle.on .tech-toggle-switch::after {
+  left: auto;
+  right: 1px;
+  background: var(--teal);
+  box-shadow: 0 0 8px var(--teal);
+}
+
+.tracks-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  min-width: 560px;
+}
+
+.tracks-table thead th {
+  text-align: left;
+  font-family: var(--fm);
+  font-size: 10px;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--ink-mute);
+  font-weight: 500;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--hair-strong);
+  white-space: nowrap;
+}
+
+.tracks-table tbody td {
+  padding: 11px 12px;
+  border-bottom: 1px solid var(--hair);
+  vertical-align: middle;
+}
+
+.track-row {
+  transition: 0.1s;
+}
+
+.track-row:hover {
+  background: linear-gradient(90deg, rgba(58, 212, 196, 0.07), transparent 80%);
+  box-shadow: inset 3px 0 0 var(--teal);
+}
+
+.col-num {
+  width: 34px;
+  text-align: right;
+}
+
+.col-filename {
+  min-width: 200px;
+}
+
+.col-codec {
+  width: 70px;
+}
+
+.col-bitrate {
+  width: 90px;
+}
+
+.col-duration {
+  width: 80px;
+}
+
+.col-samplerate {
+  width: 100px;
+}
+
+.col-channels {
+  width: 40px;
+  text-align: center;
+}
+
+.col-size {
+  width: 90px;
+  text-align: right;
+}
+
+.track-num {
+  font-family: var(--fm);
+  color: var(--ink-mute);
+}
+
+.track-filename {
+  color: var(--ink);
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.track-codec {
+  font-family: var(--fm);
+  font-size: 11px;
+}
+
+.track-bitrate,
+.track-samplerate,
+.track-channels {
+  font-family: var(--fm);
+  font-size: 12px;
+  color: var(--ink-dim);
+}
+
+.track-channels {
+  text-align: center;
+}
+
+.track-duration {
+  font-family: var(--fm);
+  color: var(--ink-dim);
+  font-size: 12px;
+}
+
+.track-size {
+  font-family: var(--fm);
+  color: var(--ink-dim);
+  font-size: 12px;
+  text-align: right;
+}
+
+/* "Show technical" toggle hides the tech-flagged bitrate/sample-rate/channel columns. */
+.hide-tech .tech {
+  display: none;
+}

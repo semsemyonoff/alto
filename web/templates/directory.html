@@ -8,8 +8,17 @@
     <div class="dir-meta">
       <div class="dir-breadcrumb">{{.LibraryName}}</div>
       <h1 class="dir-title">{{.DirName}}</h1>
-      {{if .CodecSummary}}<span class="codec-badge {{.CodecClass}}">{{.CodecSummary}}</span>{{end}}
-      <div class="dir-stats">{{.TrackCount}} track{{if ne .TrackCount 1}}s{{end}}</div>
+      <div class="dir-subline">
+        {{if .CodecSummary}}<span class="codec-badge codec-badge-lg {{.CodecClass}}">{{.CodecSummary}}</span>{{end}}
+        <span class="dir-sep"></span>
+        <span>{{.TrackCount}} track{{if ne .TrackCount 1}}s{{end}}</span>
+        {{if .Tracks}}
+        <span class="dir-sep"></span>
+        <span>{{.TotalDuration}}</span>
+        <span class="dir-sep"></span>
+        <span>{{.TotalSize}}</span>
+        {{end}}
+      </div>
     </div>
     {{if .CanTranscode}}
     <div class="dir-actions">
@@ -148,17 +157,27 @@
   {{end}}
 
   {{if .Tracks}}
-  <div class="tracks-section">
-    <table class="tracks-table">
+  <div class="tracks-section" x-data="{ showTech: false }">
+    <div class="tracks-toolbar">
+      <span class="tracks-toolbar-label">Tracks</span>
+      <button type="button"
+              class="tech-toggle"
+              :class="{ on: showTech }"
+              :aria-pressed="showTech.toString()"
+              @click="showTech = !showTech">
+        <span class="tech-toggle-switch"></span> Show technical
+      </button>
+    </div>
+    <table class="tracks-table" :class="{ 'hide-tech': !showTech }">
       <thead>
         <tr>
           <th class="col-num">#</th>
           <th class="col-filename">Filename</th>
           <th class="col-codec">Codec</th>
-          <th class="col-bitrate">Bitrate</th>
+          <th class="col-bitrate tech">Bitrate</th>
           <th class="col-duration">Duration</th>
-          <th class="col-samplerate">Sample Rate</th>
-          <th class="col-channels">Ch</th>
+          <th class="col-samplerate tech">Sample Rate</th>
+          <th class="col-channels tech">Ch</th>
           <th class="col-size">Size</th>
         </tr>
       </thead>
@@ -168,10 +187,10 @@
           <td class="col-num track-num">{{.Index}}</td>
           <td class="col-filename track-filename" title="{{.Filename}}">{{.Filename}}</td>
           <td class="col-codec track-codec">{{.Codec}}</td>
-          <td class="col-bitrate track-bitrate">{{.Bitrate}}</td>
+          <td class="col-bitrate track-bitrate tech">{{.Bitrate}}</td>
           <td class="col-duration track-duration">{{.Duration}}</td>
-          <td class="col-samplerate track-samplerate">{{.SampleRate}}</td>
-          <td class="col-channels track-channels">{{.Channels}}</td>
+          <td class="col-samplerate track-samplerate tech">{{.SampleRate}}</td>
+          <td class="col-channels track-channels tech">{{.Channels}}</td>
           <td class="col-size track-size">{{.Size}}</td>
         </tr>
         {{end}}

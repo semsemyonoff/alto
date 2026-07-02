@@ -260,10 +260,10 @@ The redesign comes from the approved Claude Design prototype; a decoded local co
 - Create: `web/frontend/src/styles/stage.css`
 - Modify: `internal/server/handlers_pages_test.go`
 
-- [ ] add `TotalDuration`/`TotalSize` to `dirPageData`, summed in `handleDirPage`
-- [ ] rebuild stage markup (cover, crumbs, title, codec pill, subline, track table); "show technical" toggle as Alpine island toggling `.hide-tech`
-- [ ] write tests for aggregates + stage render (codec pill class, toggle markup)
-- [ ] run tests + `npm run build` — must pass before next task
+- [x] add `TotalDuration`/`TotalSize` to `dirPageData`, summed in `handleDirPage`
+- [x] rebuild stage markup (cover, crumbs, title, codec pill, subline, track table); "show technical" toggle as Alpine island toggling `.hide-tech`
+- [x] write tests for aggregates + stage render (codec pill class, toggle markup)
+- [x] run tests + `npm run build` — must pass before next task
 
 ### Task 17: Transcode dock as Alpine island
 

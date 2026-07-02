@@ -251,17 +251,19 @@ type appShellData struct {
 // dirPageData is the template data for the audio directory detail page.
 type dirPageData struct {
 	appShellData
-	Path         string // absolute resolved path (for cover URL)
-	PathEncoded  string // URL-encoded path
-	LibraryID    int64
-	LibraryName  string
-	DirName      string
-	HasCover     bool
-	CodecSummary string
-	CodecClass   string
-	CanTranscode bool
-	TrackCount   int
-	Tracks       []trackRow
+	Path          string // absolute resolved path (for cover URL)
+	PathEncoded   string // URL-encoded path
+	LibraryID     int64
+	LibraryName   string
+	DirName       string
+	HasCover      bool
+	CodecSummary  string
+	CodecClass    string
+	CanTranscode  bool
+	TrackCount    int
+	TotalDuration string
+	TotalSize     string
+	Tracks        []trackRow
 }
 
 func isLosslessCodec(codec string) bool {
@@ -402,6 +404,8 @@ func (s *Server) buildAppShellData(selectedID int64) (appShellData, error) {
 // buildDirPageData constructs dirPageData for the template.
 func buildDirPageData(lib LibraryConfig, dir *db.Directory, tracks []db.Track, resolvedPath string) dirPageData {
 	rows := make([]trackRow, len(tracks))
+	var totalDuration float64
+	var totalSize int64
 	for i, t := range tracks {
 		rows[i] = trackRow{
 			Index:      i + 1,
@@ -413,19 +417,23 @@ func buildDirPageData(lib LibraryConfig, dir *db.Directory, tracks []db.Track, r
 			Channels:   t.Channels,
 			Size:       fmtSize(t.Size),
 		}
+		totalDuration += t.Duration
+		totalSize += t.Size
 	}
 	return dirPageData{
-		Path:         resolvedPath,
-		PathEncoded:  url.QueryEscape(resolvedPath),
-		LibraryID:    lib.ID,
-		LibraryName:  lib.Name,
-		DirName:      filepath.Base(resolvedPath),
-		HasCover:     dir.HasCover,
-		CodecSummary: dir.CodecSummary,
-		CodecClass:   codecClass(dir.CodecSummary),
-		CanTranscode: canTranscodeTracks(tracks),
-		TrackCount:   len(tracks),
-		Tracks:       rows,
+		Path:          resolvedPath,
+		PathEncoded:   url.QueryEscape(resolvedPath),
+		LibraryID:     lib.ID,
+		LibraryName:   lib.Name,
+		DirName:       filepath.Base(resolvedPath),
+		HasCover:      dir.HasCover,
+		CodecSummary:  dir.CodecSummary,
+		CodecClass:    codecClass(dir.CodecSummary),
+		CanTranscode:  canTranscodeTracks(tracks),
+		TrackCount:    len(tracks),
+		TotalDuration: fmtDuration(totalDuration),
+		TotalSize:     fmtSize(totalSize),
+		Tracks:        rows,
 	}
 }
 
