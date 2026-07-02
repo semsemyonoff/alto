@@ -81,11 +81,11 @@ The redesign comes from the approved Claude Design prototype; a decoded local co
 - Modify: `internal/server/jobs.go`
 - Modify: `internal/server/jobs_test.go`
 
-- [ ] add `JobStatusQueued`, `JobStatusCanceled`; add `title`, `sub`, `job transcode.Job`, `cancel context.CancelFunc`, `fanoutDone chan struct{}` to `jobState`
-- [ ] **collapse `subsMu` into `jobManager.mu`**: all per-job state (`latest`/`status`/`errMsg`) and the per-job subscriber list move under `mu`; per-job `broadcast`/`subscribe` use `mu` with non-blocking sends (one lock, no AB/BA ordering)
-- [ ] map a context-canceled engine error to `JobStatusCanceled` in `complete()`
-- [ ] write tests for status mapping (done/failed/canceled) + metadata persistence + race-free `latest` read/write under one mutex
-- [ ] run `go test -race` — must pass before next task
+- [x] add `JobStatusQueued`, `JobStatusCanceled`; add `title`, `sub`, `job transcode.Job`, `cancel context.CancelFunc`, `fanoutDone chan struct{}` to `jobState`
+- [x] **collapse `subsMu` into `jobManager.mu`**: all per-job state (`latest`/`status`/`errMsg`) and the per-job subscriber list move under `mu`; per-job `broadcast`/`subscribe` use `mu` with non-blocking sends (one lock, no AB/BA ordering)
+- [x] map a context-canceled engine error to `JobStatusCanceled` in `complete()`
+- [x] write tests for status mapping (done/failed/canceled) + metadata persistence + race-free `latest` read/write under one mutex
+- [x] run `go test -race` — must pass before next task
 
 ### Task 2: Worker pool dispatcher (sync.Cond) + caller update + preserved fanout
 

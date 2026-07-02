@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -55,15 +56,33 @@ func (rb *ringBuffer) lines() []string {
 type JobStatus string
 
 const (
-	JobStatusRunning JobStatus = "running"
-	JobStatusDone    JobStatus = "done"
-	JobStatusFailed  JobStatus = "failed"
+	JobStatusQueued   JobStatus = "queued"
+	JobStatusRunning  JobStatus = "running"
+	JobStatusDone     JobStatus = "done"
+	JobStatusFailed   JobStatus = "failed"
+	JobStatusCanceled JobStatus = "canceled"
 )
 
 // jobState holds the mutable state for a single transcoding job.
+// All mutable fields (status, errMsg, latest, subs, and the fields below) are
+// guarded by jm.mu — jobState has no lock of its own.
 type jobState struct {
 	id      string
 	dirPath string // absolute source directory (used for deduplication)
+
+	// jm is the owning manager, used to lock jm.mu for all mutable-field access.
+	jm *jobManager
+
+	// title/sub are display metadata for the queue UI (e.g. dir basename / preset summary).
+	title string
+	sub   string
+
+	// job is the transcode.Job this jobState was started with.
+	job transcode.Job
+
+	// cancel cancels the per-job context passed to the engine; set once the
+	// worker has picked the job up and built its cancel context.
+	cancel context.CancelFunc
 
 	// Status and error are set once under jobManager.mu before done is closed.
 	status JobStatus
@@ -75,20 +94,23 @@ type jobState struct {
 	// log captures human-readable lines for the tail API.
 	log *ringBuffer
 
-	// SSE subscriber management.
-	subsMu sync.Mutex
+	// SSE subscriber management (guarded by jm.mu).
 	subs   []chan transcode.ProgressReport
 	latest *transcode.ProgressReport // last report, replayed to new subscribers
 
 	// done is closed after the engine exits and status is updated.
 	done chan struct{}
+
+	// fanoutDone is closed once the fanout goroutine has drained progress and
+	// finished updating latest/log, so callers can wait for finalized state.
+	fanoutDone chan struct{}
 }
 
 // subscribe creates a new SSE subscriber channel.
 // Returns nil if the job has already finished.
 func (js *jobState) subscribe() chan transcode.ProgressReport {
-	js.subsMu.Lock()
-	defer js.subsMu.Unlock()
+	js.jm.mu.Lock()
+	defer js.jm.mu.Unlock()
 	select {
 	case <-js.done:
 		return nil
@@ -104,8 +126,8 @@ func (js *jobState) subscribe() chan transcode.ProgressReport {
 
 // unsubscribe removes the given channel from the subscriber list.
 func (js *jobState) unsubscribe(ch chan transcode.ProgressReport) {
-	js.subsMu.Lock()
-	defer js.subsMu.Unlock()
+	js.jm.mu.Lock()
+	defer js.jm.mu.Unlock()
 	for i, sub := range js.subs {
 		if sub == ch {
 			js.subs = append(js.subs[:i], js.subs[i+1:]...)
@@ -116,8 +138,8 @@ func (js *jobState) unsubscribe(ch chan transcode.ProgressReport) {
 
 // broadcast sends a ProgressReport to all SSE subscribers (non-blocking drop on slow clients).
 func (js *jobState) broadcast(p transcode.ProgressReport) {
-	js.subsMu.Lock()
-	defer js.subsMu.Unlock()
+	js.jm.mu.Lock()
+	defer js.jm.mu.Unlock()
 	js.latest = &p
 	for _, ch := range js.subs {
 		select {
@@ -129,8 +151,8 @@ func (js *jobState) broadcast(p transcode.ProgressReport) {
 
 // closeSubs closes and clears all SSE subscriber channels.
 func (js *jobState) closeSubs() {
-	js.subsMu.Lock()
-	defer js.subsMu.Unlock()
+	js.jm.mu.Lock()
+	defer js.jm.mu.Unlock()
 	for _, ch := range js.subs {
 		close(ch)
 	}
@@ -162,6 +184,7 @@ func (jm *jobManager) start(id, dirPath string) (*jobState, bool) {
 	js := &jobState{
 		id:       id,
 		dirPath:  dirPath,
+		jm:       jm,
 		status:   JobStatusRunning,
 		progress: make(chan transcode.ProgressReport, 64),
 		log:      newRingBuffer(1000),
@@ -178,11 +201,14 @@ func (jm *jobManager) complete(id string, err error) {
 	jm.mu.Lock()
 	js, ok := jm.jobs[id]
 	if ok {
-		if err != nil {
+		switch {
+		case err == nil:
+			js.status = JobStatusDone
+		case errors.Is(err, context.Canceled):
+			js.status = JobStatusCanceled
+		default:
 			js.status = JobStatusFailed
 			js.errMsg = err.Error()
-		} else {
-			js.status = JobStatusDone
 		}
 		delete(jm.byDir, js.dirPath)
 	}
