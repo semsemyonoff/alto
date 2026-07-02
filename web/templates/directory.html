@@ -128,22 +128,13 @@
         </div>
       </div>
 
-      <div class="dock-progress" id="tc_progress" x-show="jobId" x-cloak>
-        <div class="dock-progress-row">
-          <span x-text="progressFile"></span>
-          <span x-text="Math.round(progressPct) + '%'"></span>
-        </div>
-        <div class="dock-progress-track">
-          <div class="dock-progress-fill" :style="'width:' + progressPct + '%'"></div>
-        </div>
-        <p class="dock-result" id="tc_result" :class="resultOk ? 'ok' : 'err'" x-show="resultText" x-text="resultText"></p>
-        <button type="button"
-                class="btn-reindex-dock"
-                id="tc_reindex_btn"
-                x-show="resultOk && (outputMode === 'local' || outputMode === 'shared')"
-                x-cloak
-                @click="reindex()">&#8635; Re-index Library</button>
-      </div>
+      <p class="dock-result" id="tc_result" :class="resultOk ? 'ok' : 'err'" x-show="resultText" x-text="resultText"></p>
+      <button type="button"
+              class="btn-reindex-dock"
+              id="tc_reindex_btn"
+              x-show="resultOk"
+              x-cloak
+              @click="reindex()">&#8635; Re-index Library</button>
 
       <p class="dock-error" id="tc_error" x-show="error" x-text="error"></p>
     </div>

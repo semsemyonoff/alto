@@ -284,11 +284,11 @@ The redesign comes from the approved Claude Design prototype; a decoded local co
 - Create: `web/frontend/src/queue.ts`, `web/frontend/src/queue.test.ts`, `web/frontend/src/styles/queue.css`
 - Modify: `internal/server/handlers_transcode_test.go`
 
-- [ ] TS module: initial `GET /api/jobs`, subscribe `GET /api/jobs/events`, reconcile rows (VU fill/needle, pct, status dot/label), bubble counts; row click expands logs (lazy `GET /api/transcode/{id}/log`); `×` → `POST /api/jobs/{id}/cancel`; panel collapse
-- [ ] now that the queue UI is live, **retire** `GET /api/transcode/{jobID}/progress` (route + `handleTranscodeProgress`), remove the directory page's old `EventSource`, and delete the now-dead `subscribe/subs/unsubscribe/closeSubs` machinery (keep `latest` maintained by the fanout)
-- [ ] render VU/queue styles into `queue.css`
-- [ ] write Vitest tests (reconcile add/update/complete/cancel, counts, cancel URL) + Go test confirming the old progress route is gone and `/log` still works
-- [ ] run `npm run test` + `make test` — must pass before next task
+- [x] TS module: initial `GET /api/jobs`, subscribe `GET /api/jobs/events`, reconcile rows (VU fill/needle, pct, status dot/label), bubble counts; row click expands logs (lazy `GET /api/transcode/{id}/log`); `×` → `POST /api/jobs/{id}/cancel`; panel collapse
+- [x] now that the queue UI is live, **retire** `GET /api/transcode/{jobID}/progress` (route + `handleTranscodeProgress`), remove the directory page's old `EventSource`, and delete the now-dead `subscribe/subs/unsubscribe/closeSubs` machinery (keep `latest` maintained by the fanout)
+- [x] render VU/queue styles into `queue.css`
+- [x] write Vitest tests (reconcile add/update/complete/cancel, counts, cancel URL) + Go test confirming the old progress route is gone and `/log` still works
+- [x] run `npm run test` + `make test` — must pass before next task
 
 ### Task 19: Library selector + indexed status
 

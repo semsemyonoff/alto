@@ -94,9 +94,10 @@ type jobState struct {
 	// log captures human-readable lines for the tail API.
 	log *ringBuffer
 
-	// SSE subscriber management (guarded by jm.mu).
-	subs   []chan transcode.ProgressReport
-	latest *transcode.ProgressReport // last report, replayed to new subscribers
+	// latest is the most recent progress report, guarded by jm.mu. It feeds
+	// the centralized pct-shaping helper used by /api/jobs and the global
+	// event bus.
+	latest *transcode.ProgressReport
 
 	// done is closed after the engine exits and status is updated.
 	done chan struct{}
@@ -106,57 +107,12 @@ type jobState struct {
 	fanoutDone chan struct{}
 }
 
-// subscribe creates a new SSE subscriber channel.
-// Returns nil if the job has already finished.
-func (js *jobState) subscribe() chan transcode.ProgressReport {
-	js.jm.mu.Lock()
-	defer js.jm.mu.Unlock()
-	select {
-	case <-js.done:
-		return nil
-	default:
-	}
-	ch := make(chan transcode.ProgressReport, 32)
-	if js.latest != nil {
-		ch <- *js.latest
-	}
-	js.subs = append(js.subs, ch)
-	return ch
-}
-
-// unsubscribe removes the given channel from the subscriber list.
-func (js *jobState) unsubscribe(ch chan transcode.ProgressReport) {
-	js.jm.mu.Lock()
-	defer js.jm.mu.Unlock()
-	for i, sub := range js.subs {
-		if sub == ch {
-			js.subs = append(js.subs[:i], js.subs[i+1:]...)
-			return
-		}
-	}
-}
-
-// broadcast sends a ProgressReport to all SSE subscribers (non-blocking drop on slow clients).
-func (js *jobState) broadcast(p transcode.ProgressReport) {
+// updateLatest records the most recent progress report for the job. Guarded
+// by jm.mu so it is race-free against concurrent reads (e.g. calcJobPercent).
+func (js *jobState) updateLatest(p transcode.ProgressReport) {
 	js.jm.mu.Lock()
 	defer js.jm.mu.Unlock()
 	js.latest = &p
-	for _, ch := range js.subs {
-		select {
-		case ch <- p:
-		default:
-		}
-	}
-}
-
-// closeSubs closes and clears all SSE subscriber channels.
-func (js *jobState) closeSubs() {
-	js.jm.mu.Lock()
-	defer js.jm.mu.Unlock()
-	for _, ch := range js.subs {
-		close(ch)
-	}
-	js.subs = nil
 }
 
 // jobEvent is the global queue-panel event broadcast on every job lifecycle
@@ -420,15 +376,13 @@ func (jm *jobManager) runOneJob(js *jobState, job transcode.Job, ctx context.Con
 
 	go func() {
 		for p := range js.progress {
-			js.broadcast(p)
+			js.updateLatest(p)
 			if ev, ok := jm.snapshotEvent(js.id); ok {
 				jm.broadcastEvent(ev)
 			}
 			js.log.add(fmt.Sprintf("file %d/%d: %s %.0f%%",
 				p.FileIndex+1, p.TotalFiles, p.CurrentFile, p.FilePercent))
 		}
-		// Engine has finished; close SSE subscribers.
-		js.closeSubs()
 		close(fanoutDone)
 	}()
 
@@ -468,9 +422,6 @@ func (jm *jobManager) complete(id string, err error) {
 	jm.mu.Unlock()
 	if ok {
 		close(js.done)
-		// Close any subscribers that slipped in after the fanout goroutine ran closeSubs
-		// but before done was closed (TOCTOU window in subscribe()).
-		js.closeSubs()
 		jm.scheduleEviction(id)
 	}
 }
@@ -505,7 +456,6 @@ func (jm *jobManager) cancel(id string) cancelResult {
 		close(js.done)
 		jm.broadcastEventLocked(jm.eventForLocked(js))
 		jm.mu.Unlock()
-		js.closeSubs()
 		jm.scheduleEviction(id)
 		return cancelResultCanceled
 	case JobStatusRunning:

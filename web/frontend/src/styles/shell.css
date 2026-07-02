@@ -2,7 +2,7 @@
   --sidebar-width: 280px;
   height: 100vh;
   display: grid;
-  grid-template-rows: 58px 2px 1fr;
+  grid-template-rows: 58px 2px minmax(0, 1fr) auto;
   grid-template-columns: var(--sidebar-width) 10px minmax(0, 1fr);
   overflow: hidden;
 }

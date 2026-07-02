@@ -1,7 +1,6 @@
 package server
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -267,31 +266,20 @@ func TestHandleTranscodeStart_DirectoryNotIndexed(t *testing.T) {
 	}
 }
 
-// --- GET /api/transcode/{jobID}/progress ---
+// --- GET /api/transcode/{jobID}/progress (retired) ---
 
-func TestHandleTranscodeProgress_JobNotFound(t *testing.T) {
-	srv, _, _, _ := newTestServerWithEngine(t, &mockEngine{})
-
-	req := httptest.NewRequest(http.MethodGet, "/api/transcode/nope/progress", nil)
-	req.SetPathValue("jobID", "nope")
-	w := httptest.NewRecorder()
-
-	srv.handleTranscodeProgress(w, req)
-
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("expected 404, got %d", w.Code)
+// TestTranscodeProgressRoute_Removed confirms the per-job progress SSE route
+// was retired once the global queue panel (GET /api/jobs, GET /api/jobs/events)
+// took over live progress display, while /log — still used for the queue
+// row's lazy log expansion — keeps working through the same mux.
+func TestTranscodeProgressRoute_Removed(t *testing.T) {
+	eng := &mockEngine{
+		reports: []transcode.ProgressReport{
+			{CurrentFile: "track1.flac", FileIndex: 0, TotalFiles: 1, FilePercent: 100},
+		},
 	}
-}
-
-func TestHandleTranscodeProgress_SSEStream(t *testing.T) {
-	reports := []transcode.ProgressReport{
-		{CurrentFile: "track1.flac", FileIndex: 0, TotalFiles: 2, FilePercent: 50},
-		{CurrentFile: "track2.flac", FileIndex: 1, TotalFiles: 2, FilePercent: 100},
-	}
-	eng := &mockEngine{reports: reports}
 	srv, _, _, dirPath := newTestServerWithEngine(t, eng)
 
-	// Start a job.
 	body := map[string]any{"path": dirPath, "preset": "Balanced", "output_mode": "shared"}
 	b, _ := json.Marshal(body)
 	startReq := httptest.NewRequest(http.MethodPost, "/api/transcode", bytes.NewReader(b))
@@ -304,90 +292,25 @@ func TestHandleTranscodeProgress_SSEStream(t *testing.T) {
 	_ = json.Unmarshal(startW.Body.Bytes(), &startResp)
 	jobID := startResp["job_id"]
 
-	// Wait for job to complete.
 	js, _ := srv.jobs.get(jobID)
 	select {
 	case <-js.done:
 	case <-time.After(3 * time.Second):
-		t.Fatal("job did not complete in time")
+		t.Fatal("job did not complete")
 	}
 
-	// Progress SSE for a completed job should return a done event.
 	progReq := httptest.NewRequest(http.MethodGet, "/api/transcode/"+jobID+"/progress", nil)
-	progReq.SetPathValue("jobID", jobID)
 	progW := httptest.NewRecorder()
-	srv.handleTranscodeProgress(progW, progReq)
-
-	body2 := progW.Body.String()
-	if !strings.Contains(body2, "event: done") {
-		t.Errorf("expected 'event: done' in SSE output, got: %s", body2)
-	}
-}
-
-func TestHandleTranscodeProgress_LiveStream(t *testing.T) {
-	block := make(chan struct{})
-	reports := []transcode.ProgressReport{
-		{CurrentFile: "track1.flac", FileIndex: 0, TotalFiles: 1, FilePercent: 75},
-	}
-	eng := &mockEngine{reports: reports, block: block}
-	srv, _, _, dirPath := newTestServerWithEngine(t, eng)
-
-	// Start job.
-	body := map[string]any{"path": dirPath, "preset": "Balanced", "output_mode": "shared"}
-	b, _ := json.Marshal(body)
-	startReq := httptest.NewRequest(http.MethodPost, "/api/transcode", bytes.NewReader(b))
-	startW := httptest.NewRecorder()
-	srv.handleTranscodeStart(startW, startReq)
-	if startW.Code != http.StatusAccepted {
-		t.Fatalf("start: expected 202, got %d", startW.Code)
-	}
-	var startResp map[string]string
-	_ = json.Unmarshal(startW.Body.Bytes(), &startResp)
-	jobID := startResp["job_id"]
-
-	// Wait for progress reports to be consumed by the fanout goroutine.
-	time.Sleep(100 * time.Millisecond)
-
-	// Connect a progress SSE client.
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	progReq := httptest.NewRequest(http.MethodGet, "/api/transcode/"+jobID+"/progress", nil).WithContext(ctx)
-	progReq.SetPathValue("jobID", jobID)
-	progW := httptest.NewRecorder()
-
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		srv.handleTranscodeProgress(progW, progReq)
-	}()
-
-	// Give the SSE handler time to subscribe before the job exits.
-	time.Sleep(50 * time.Millisecond)
-
-	// Unblock the engine so the job finishes and SSE stream closes.
-	close(block)
-
-	select {
-	case <-done:
-	case <-time.After(3 * time.Second):
-		t.Fatal("SSE handler did not return after job completion")
+	srv.mux.ServeHTTP(progW, progReq)
+	if progW.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for retired progress route, got %d", progW.Code)
 	}
 
-	if !strings.Contains(progW.Body.String(), "event: done") {
-		t.Errorf("expected 'event: done', got: %s", progW.Body.String())
-	}
-	// Regression: the terminal SSE event must report status "done" once the engine
-	// has returned without error. A prior race between the fanout goroutine closing
-	// subscriber channels and jm.complete setting js.status caused the SSE handler
-	// to emit status "running" here, which the UI surfaced as "Transcoding failed".
-	if !strings.Contains(progW.Body.String(), `"status":"done"`) {
-		t.Errorf("expected terminal event status=done, got: %s", progW.Body.String())
-	}
-	if !strings.Contains(progW.Body.String(), `"current_file_number":1`) {
-		t.Errorf("expected current_file_number in progress payload, got: %s", progW.Body.String())
-	}
-	if !strings.Contains(progW.Body.String(), `"total_files":1`) {
-		t.Errorf("expected total_files in progress payload, got: %s", progW.Body.String())
+	logReq := httptest.NewRequest(http.MethodGet, "/api/transcode/"+jobID+"/log", nil)
+	logW := httptest.NewRecorder()
+	srv.mux.ServeHTTP(logW, logReq)
+	if logW.Code != http.StatusOK {
+		t.Fatalf("expected 200 for /log, got %d: %s", logW.Code, logW.Body.String())
 	}
 }
 
@@ -778,55 +701,6 @@ func TestHandleJobCancel_MissingID(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", w.Code)
-	}
-}
-
-// --- SSE event format ---
-
-func TestSSEEventFormat(t *testing.T) {
-	eng := &mockEngine{
-		reports: []transcode.ProgressReport{
-			{CurrentFile: "song.flac", FileIndex: 0, TotalFiles: 1, FilePercent: 50},
-		},
-	}
-	srv, _, _, dirPath := newTestServerWithEngine(t, eng)
-
-	body := map[string]any{"path": dirPath, "preset": "Balanced", "output_mode": "shared"}
-	b, _ := json.Marshal(body)
-	startReq := httptest.NewRequest(http.MethodPost, "/api/transcode", bytes.NewReader(b))
-	startW := httptest.NewRecorder()
-	srv.handleTranscodeStart(startW, startReq)
-	var startResp map[string]string
-	_ = json.Unmarshal(startW.Body.Bytes(), &startResp)
-	jobID := startResp["job_id"]
-
-	js, _ := srv.jobs.get(jobID)
-	select {
-	case <-js.done:
-	case <-time.After(3 * time.Second):
-		t.Fatal("job did not complete")
-	}
-
-	req := httptest.NewRequest(http.MethodGet, "/api/transcode/"+jobID+"/progress", nil)
-	req.SetPathValue("jobID", jobID)
-	w := httptest.NewRecorder()
-	srv.handleTranscodeProgress(w, req)
-
-	// Parse SSE events.
-	scanner := bufio.NewScanner(strings.NewReader(w.Body.String()))
-	var events []string
-	for scanner.Scan() {
-		line := scanner.Text()
-		if after, ok := strings.CutPrefix(line, "event: "); ok {
-			events = append(events, after)
-		}
-	}
-	if len(events) == 0 {
-		t.Error("expected at least one SSE event")
-	}
-	last := events[len(events)-1]
-	if last != "done" {
-		t.Errorf("expected last event 'done', got %q", last)
 	}
 }
 

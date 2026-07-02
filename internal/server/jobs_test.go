@@ -128,10 +128,9 @@ func TestJobState_MetadataPersistence(t *testing.T) {
 	}
 }
 
-// TestJobState_LatestRaceFree exercises concurrent broadcast/subscribe/
-// unsubscribe from many goroutines. Run with -race to confirm the collapse
-// of subsMu into jobManager.mu removed the separate lock without introducing
-// unsynchronized access to latest/subs.
+// TestJobState_LatestRaceFree exercises concurrent updateLatest writers
+// against concurrent readers of js.latest. Run with -race to confirm the
+// collapse of subsMu into jobManager.mu introduced no unsynchronized access.
 func TestJobState_LatestRaceFree(t *testing.T) {
 	jm := newJobManager(nil, 0, context.Background())
 	js, started := jm.start("job1", "/dir1", transcode.Job{}, "", "")
@@ -141,31 +140,23 @@ func TestJobState_LatestRaceFree(t *testing.T) {
 
 	var wg sync.WaitGroup
 
-	// Concurrent broadcasters.
+	// Concurrent writers.
 	for i := range 20 {
 		wg.Go(func() {
-			js.broadcast(transcode.ProgressReport{FileIndex: i, TotalFiles: 20})
+			js.updateLatest(transcode.ProgressReport{FileIndex: i, TotalFiles: 20})
 		})
 	}
 
-	// Concurrent subscribe/unsubscribe.
+	// Concurrent readers.
 	for range 20 {
 		wg.Go(func() {
-			ch := js.subscribe()
-			if ch == nil {
-				return
-			}
-			// broadcast() sends are non-blocking (buffered channel, default-drop),
-			// so no drain goroutine is needed before unsubscribing.
-			js.unsubscribe(ch)
+			jm.mu.Lock()
+			_ = js.latest
+			jm.mu.Unlock()
 		})
 	}
 
 	wg.Wait()
-
-	jm.mu.Lock()
-	_ = js.latest
-	jm.mu.Unlock()
 }
 
 // blockingEngine blocks in Transcode until block is closed, then returns err.

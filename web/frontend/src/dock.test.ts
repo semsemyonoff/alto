@@ -4,10 +4,8 @@ import {
   buildTranscodeRequestBody,
   canStartTranscode,
   defaultPresetName,
-  doneResult,
   parsePresets,
   presetsForCodec,
-  progressFileText,
   readDockConfig,
   startStatusText,
   type PresetsByCodec,
@@ -121,33 +119,6 @@ describe('startStatusText', () => {
 
   it('reports no tracks when the directory is empty', () => {
     expect(startStatusText(true, 0, false)).toBe('No tracks to transcode')
-  })
-})
-
-describe('progressFileText', () => {
-  it('returns the current file name', () => {
-    expect(progressFileText({ current_file: '02_track.flac' })).toBe('02_track.flac')
-  })
-
-  it('falls back to a placeholder when absent', () => {
-    expect(progressFileText({})).toBe('Processing…')
-  })
-})
-
-describe('doneResult', () => {
-  it('reports success for a done status', () => {
-    expect(doneResult({ status: 'done' })).toEqual({ text: '✓ Transcoding complete', ok: true })
-  })
-
-  it('reports the server error for a failed status', () => {
-    expect(doneResult({ status: 'failed', error: 'ffmpeg exited 1' })).toEqual({
-      text: '✗ ffmpeg exited 1',
-      ok: false,
-    })
-  })
-
-  it('falls back to a generic message when no error is given', () => {
-    expect(doneResult({ status: 'canceled' })).toEqual({ text: '✗ Transcoding failed', ok: false })
   })
 })
 

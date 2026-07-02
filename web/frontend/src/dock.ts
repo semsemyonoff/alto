@@ -3,7 +3,9 @@
  * table. It filters transcode.DefaultPresets() (marshaled server-side into a
  * per-page <script id="tc-presets-data"> tag) by the selected codec, builds
  * the POST /api/transcode request body, and disables START with a reason
- * when the directory isn't transcodable.
+ * when the directory isn't transcodable. Once a job is enqueued its
+ * lifecycle (progress, completion, cancellation) is tracked by the global
+ * queue panel (queue.ts), not by the dock.
  */
 
 export type Codec = 'flac' | 'opus'
@@ -75,34 +77,6 @@ export function startStatusText(canTranscode: boolean, trackCount: number, start
   return `${trackCount} track${trackCount === 1 ? '' : 's'}`
 }
 
-export interface ProgressReport {
-  current_file?: string
-  overall_percent?: number
-}
-
-/** Derives the dock's progress readout from a `progress` SSE event payload. */
-export function progressFileText(report: ProgressReport): string {
-  return report.current_file || 'Processing…'
-}
-
-export interface DoneReport {
-  status?: string
-  error?: string
-}
-
-export interface DoneResult {
-  text: string
-  ok: boolean
-}
-
-/** Derives the dock's result line from a `done` SSE event payload. */
-export function doneResult(report: DoneReport): DoneResult {
-  if (report.status === 'done') {
-    return { text: '✓ Transcoding complete', ok: true }
-  }
-  return { text: `✗ ${report.error || 'Transcoding failed'}`, ok: false }
-}
-
 export interface DockConfig {
   path: string
   canTranscode: boolean
@@ -136,12 +110,8 @@ interface DockData {
   canTranscode: boolean
   trackCount: number
   libraryId: string
-  jobId: string | null
-  progressPct: number
-  progressFile: string
   resultText: string
   resultOk: boolean
-  _es: EventSource | null
   init(): void
   readonly presetLabel: string
   readonly canStart: boolean
@@ -149,7 +119,6 @@ interface DockData {
   setCodec(codec: Codec): void
   selectPreset(name: string): void
   start(): Promise<void>
-  watchProgress(jobId: string): void
   reindex(): void
 }
 
@@ -168,12 +137,8 @@ export function altoDock(): DockData {
     canTranscode: false,
     trackCount: 0,
     libraryId: '',
-    jobId: null,
-    progressPct: 0,
-    progressFile: '',
     resultText: '',
     resultOk: false,
-    _es: null,
 
     init() {
       const el = (this as unknown as { $el: HTMLElement }).$el
@@ -239,49 +204,12 @@ export function altoDock(): DockData {
           this.starting = false
           return
         }
-        this.jobId = data.job_id
-        this.watchProgress(data.job_id)
+        this.resultText = 'Queued — track progress in the queue below'
+        this.resultOk = true
+        this.starting = false
       } catch (err) {
         this.error = String(err)
         this.starting = false
-      }
-    },
-
-    watchProgress(jobId: string) {
-      this._es?.close()
-      const es = new EventSource(`/api/transcode/${jobId}/progress`)
-      this._es = es
-
-      es.addEventListener('progress', (e) => {
-        try {
-          const report: ProgressReport = JSON.parse((e as MessageEvent).data)
-          this.progressFile = progressFileText(report)
-          this.progressPct = report.overall_percent || 0
-        } catch {
-          // ignore malformed events
-        }
-      })
-
-      es.addEventListener('done', (e) => {
-        es.close()
-        this._es = null
-        this.starting = false
-        try {
-          const report: DoneReport = JSON.parse((e as MessageEvent).data)
-          const result = doneResult(report)
-          this.resultText = result.text
-          this.resultOk = result.ok
-          if (result.ok) this.progressPct = 100
-        } catch {
-          // ignore malformed events
-        }
-      })
-
-      es.onerror = () => {
-        if (!this.resultText) {
-          this.resultText = '✗ Connection lost — check server log'
-          this.resultOk = false
-        }
       }
     },
 

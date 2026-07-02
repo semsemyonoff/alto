@@ -50,6 +50,57 @@
     {{template "content" .}}
   </main>
 
+  <section class="queue" id="queue" x-data="altoQueue()" :class="{ collapsed: collapsed }">
+    <div class="q-head">
+      <div class="qt">Queue <span class="bub" x-text="bubble"></span></div>
+      <button type="button" class="collapse" @click="toggleCollapse()">
+        <span x-text="collapsed ? 'expand' : 'collapse'"></span> <span class="ca">&#9662;</span>
+      </button>
+    </div>
+    <div class="q-list">
+      <template x-if="jobs.length === 0">
+        <div class="q-empty">No jobs. Select a directory and press START.</div>
+      </template>
+      <template x-for="job in jobs" :key="job.id">
+        <div class="q-item" :class="{ open: job.logsOpen }">
+          <div class="q-row" @click="toggleLogs(job)">
+            <span class="sdot" :class="job.status"></span>
+            <div class="q-name">
+              <b x-text="job.title"></b>
+              <small x-text="job.sub"></small>
+            </div>
+            <div class="vu" :class="job.status">
+              <div class="fill" :style="'width:' + job.pct + '%'"></div>
+              <div class="needle" :style="'left:' + job.pct + '%'"></div>
+            </div>
+            <div class="q-pct" :class="job.status" x-text="pctText(job)"></div>
+            <div class="q-state" :class="job.status" x-text="job.status"></div>
+            <button type="button"
+                    class="q-cancel"
+                    x-show="isCancelable(job)"
+                    x-cloak
+                    title="Cancel"
+                    @click.stop="cancel(job)">&times;</button>
+            <span class="q-chev" x-show="!isCancelable(job)" x-cloak title="Transcode logs">&#9662;</span>
+          </div>
+          <div class="q-logs">
+            <div class="inner">
+              <template x-if="job.logsLoading">
+                <div class="ll">loading…</div>
+              </template>
+              <template x-if="!job.logsLoading && job.logs.length === 0">
+                <div class="ll">no log output yet</div>
+              </template>
+              <template x-for="(line, i) in job.logs" :key="i">
+                <div class="ll" x-text="line"></div>
+              </template>
+            </div>
+          </div>
+        </div>
+      </template>
+    </div>
+  </section>
+
 </div>
 
 <script>(function(){

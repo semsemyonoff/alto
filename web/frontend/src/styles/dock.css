@@ -299,36 +299,6 @@
   box-shadow: 0 0 10px var(--danger);
 }
 
-.dock-progress {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.dock-progress-row {
-  display: flex;
-  justify-content: space-between;
-  font-family: var(--fm);
-  font-size: 11px;
-  color: var(--ink-dim);
-}
-
-.dock-progress-track {
-  height: 8px;
-  border-radius: 99px;
-  background: #15110b;
-  border: 1px solid var(--hair-strong);
-  overflow: hidden;
-}
-
-.dock-progress-fill {
-  height: 100%;
-  width: 0;
-  background: var(--grad);
-  box-shadow: 0 0 12px rgba(58, 212, 196, 0.5);
-  transition: width 0.25s linear;
-}
-
 .dock-result {
   font-family: var(--fm);
   font-size: 11.5px;
