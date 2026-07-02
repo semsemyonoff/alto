@@ -271,10 +271,10 @@ The redesign comes from the approved Claude Design prototype; a decoded local co
 - Modify: `web/templates/directory.html`, `internal/server/handlers_pages.go` (presets JSON + `CanTranscode`)
 - Create: `web/frontend/src/dock.ts`, `web/frontend/src/dock.test.ts`, `web/frontend/src/styles/dock.css`
 
-- [ ] marshal `DefaultPresets()` grouped by codec into a JSON `<script>`; render dock markup (codec toggle, preset dropdown, output modes incl. replace warning, START)
-- [ ] Alpine component: codec switch filters presets, output-mode selection, builds `POST /api/transcode` body; START disabled with reason when `CanTranscode` is false (keep request shape compatible with `handleTranscodeStart`)
-- [ ] write Vitest tests for preset filtering + request-body build (incl. disabled-on-lossy)
-- [ ] run `npm run test` + `make test` — must pass before next task
+- [x] marshal `DefaultPresets()` grouped by codec into a JSON `<script>`; render dock markup (codec toggle, preset dropdown, output modes incl. replace warning, START)
+- [x] Alpine component: codec switch filters presets, output-mode selection, builds `POST /api/transcode` body; START disabled with reason when `CanTranscode` is false (keep request shape compatible with `handleTranscodeStart`)
+- [x] write Vitest tests for preset filtering + request-body build (incl. disabled-on-lossy)
+- [x] run `npm run test` + `make test` — must pass before next task
 
 ### Task 18: Global queue panel (TS + SSE) and retire per-job progress
 

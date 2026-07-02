@@ -60,11 +60,11 @@ func newTestServerWithRealTemplates(t *testing.T) (*Server, *db.DB, string) {
 	return srv, database, libDir
 }
 
-// --- Transcode button / panel rendering ---
+// --- Transcode dock rendering ---
 
-// TestTranscodeForm_RenderedWithTracks verifies that a directory page
-// with indexed tracks includes the Transcode button and all key panel elements.
-func TestTranscodeForm_RenderedWithTracks(t *testing.T) {
+// TestTranscodeDock_RenderedWithTracks verifies that a directory page with
+// indexed lossless tracks includes the dock and its key controls.
+func TestTranscodeDock_RenderedWithTracks(t *testing.T) {
 	srv, database, libDir := newTestServerWithRealTemplates(t)
 	libID := srv.cfg.Libraries[0].ID
 
@@ -97,79 +97,47 @@ func TestTranscodeForm_RenderedWithTracks(t *testing.T) {
 	}
 	body := w.Body.String()
 
-	// Transcode button
-	if !strings.Contains(body, "transcode-btn") {
-		t.Error("expect transcode-btn element for directory with tracks")
+	if !strings.Contains(body, `id="tc-dock"`) {
+		t.Error("expect dock element (id=tc-dock) for directory with tracks")
 	}
-	// Transcode panel
-	if !strings.Contains(body, "transcode-panel") {
-		t.Error("expect transcode-panel element for directory with tracks")
+	if !strings.Contains(body, `x-data="altoDock()"`) {
+		t.Error("expect the dock to be wired up as the altoDock Alpine island")
 	}
-	// Codec selectors
-	if !strings.Contains(body, "tc_codec_flac") {
-		t.Error("expect FLAC codec radio button (id=tc_codec_flac)")
+	if !strings.Contains(body, `data-can-transcode="true"`) {
+		t.Error("expect data-can-transcode=true for a lossless directory")
 	}
-	if !strings.Contains(body, "tc_codec_opus") {
-		t.Error("expect Opus codec radio button (id=tc_codec_opus)")
+	if !strings.Contains(body, `data-track-count="1"`) {
+		t.Error("expect data-track-count to reflect the track count")
 	}
-	// Preset selector
-	if !strings.Contains(body, "tc_preset") {
-		t.Error("expect preset selector (id=tc_preset)")
+	if !strings.Contains(body, `id="tc_preset_btn"`) {
+		t.Error("expect preset dropdown button (id=tc_preset_btn)")
 	}
-	// Output mode radios
-	if !strings.Contains(body, "tc_mode_shared") {
-		t.Error("expect shared output mode radio (id=tc_mode_shared)")
+	if !strings.Contains(body, `id="tc_mode_shared"`) {
+		t.Error("expect shared output mode control (id=tc_mode_shared)")
 	}
-	if !strings.Contains(body, "tc_mode_local") {
-		t.Error("expect local output mode radio (id=tc_mode_local)")
+	if !strings.Contains(body, `id="tc_mode_local"`) {
+		t.Error("expect local output mode control (id=tc_mode_local)")
 	}
-	if !strings.Contains(body, "tc_mode_replace") {
-		t.Error("expect replace output mode radio (id=tc_mode_replace)")
+	if !strings.Contains(body, `id="tc_mode_replace"`) {
+		t.Error("expect replace output mode control (id=tc_mode_replace)")
 	}
-	// Replace warning element (initially hidden)
-	if !strings.Contains(body, "tc_replace_warning") {
-		t.Error("expect tc_replace_warning element")
-	}
-	// Start button
-	if !strings.Contains(body, "tc_start_btn") {
+	if !strings.Contains(body, `id="tc_start_btn"`) {
 		t.Error("expect tc_start_btn element")
 	}
-	// Progress area (initially hidden)
-	if !strings.Contains(body, "tc_progress_area") {
-		t.Error("expect tc_progress_area element")
+	if !strings.Contains(body, `id="tc-presets-data"`) {
+		t.Error("expect the presets JSON script tag (id=tc-presets-data)")
 	}
-	if !strings.Contains(body, "tc_progress_fill") {
-		t.Error("expect tc_progress_fill progress bar element")
-	}
-	// Log viewer
-	if !strings.Contains(body, "tc_log_body") {
-		t.Error("expect tc_log_body log element")
-	}
-	// Result element
-	if !strings.Contains(body, "tc_result") {
-		t.Error("expect tc_result element")
-	}
-	// Custom params section
-	if !strings.Contains(body, "tc_custom_params") {
-		t.Error("expect tc_custom_params element")
-	}
-	if !strings.Contains(body, "tc_custom_flac") {
-		t.Error("expect FLAC-specific custom params section")
-	}
-	if !strings.Contains(body, "tc_custom_opus") {
-		t.Error("expect Opus-specific custom params section")
-	}
-	if !strings.Contains(body, "tc_file_counter") {
-		t.Error("expect transcode progress track counter element")
+	if !strings.Contains(body, `"flac"`) || !strings.Contains(body, `"opus"`) {
+		t.Error("expect the presets JSON to include both flac and opus groups")
 	}
 	if !strings.Contains(body, "library-select") || !strings.Contains(body, "tree-root") {
 		t.Error("expect direct /dir page to render the full app shell")
 	}
 }
 
-// TestTranscodeForm_NotRenderedWithoutTracks verifies that a directory page
-// without indexed tracks does NOT render the Transcode button or panel.
-func TestTranscodeForm_NotRenderedWithoutTracks(t *testing.T) {
+// TestTranscodeDock_NotRenderedWithoutTracks verifies that a directory page
+// without indexed tracks does NOT render the dock.
+func TestTranscodeDock_NotRenderedWithoutTracks(t *testing.T) {
 	srv, database, libDir := newTestServerWithRealTemplates(t)
 	libID := srv.cfg.Libraries[0].ID
 
@@ -186,17 +154,15 @@ func TestTranscodeForm_NotRenderedWithoutTracks(t *testing.T) {
 	}
 	body := w.Body.String()
 
-	// The JS block always references 'transcode-btn' as a string, so check for the
-	// HTML attribute form to distinguish element presence from JS references.
-	if strings.Contains(body, `id="transcode-btn"`) {
-		t.Error("transcode-btn element must not be rendered when directory has no tracks")
-	}
-	if strings.Contains(body, `id="transcode-panel"`) {
-		t.Error("transcode-panel element must not be rendered when directory has no tracks")
+	if strings.Contains(body, `id="tc-dock"`) {
+		t.Error("dock must not be rendered when directory has no tracks")
 	}
 }
 
-func TestTranscodeForm_NotRenderedForLossyTracks(t *testing.T) {
+// TestTranscodeDock_DisabledForLossyTracks verifies that a directory with only
+// lossy tracks still renders the dock, but flagged not-transcodable so START
+// disables itself with a reason.
+func TestTranscodeDock_DisabledForLossyTracks(t *testing.T) {
 	srv, database, libDir := newTestServerWithRealTemplates(t)
 	libID := srv.cfg.Libraries[0].ID
 
@@ -228,17 +194,17 @@ func TestTranscodeForm_NotRenderedForLossyTracks(t *testing.T) {
 	}
 	body := w.Body.String()
 
-	if strings.Contains(body, `id="transcode-btn"`) {
-		t.Error("transcode-btn element must not be rendered for lossy directories")
+	if !strings.Contains(body, `id="tc-dock"`) {
+		t.Error("dock must still render for lossy directories, disabled via data-can-transcode")
 	}
-	if strings.Contains(body, `id="transcode-panel"`) {
-		t.Error("transcode-panel element must not be rendered for lossy directories")
+	if !strings.Contains(body, `data-can-transcode="false"`) {
+		t.Error("expect data-can-transcode=false for a lossy directory")
 	}
 }
 
-// TestTranscodeForm_DataPath verifies the panel keeps the raw absolute path in
-// data-path so JS can send it without an extra decode step.
-func TestTranscodeForm_DataPath(t *testing.T) {
+// TestTranscodeDock_DataPath verifies the dock keeps the raw absolute path in
+// data-path so the Alpine component can send it without an extra decode step.
+func TestTranscodeDock_DataPath(t *testing.T) {
 	srv, database, libDir := newTestServerWithRealTemplates(t)
 	libID := srv.cfg.Libraries[0].ID
 
@@ -261,64 +227,24 @@ func TestTranscodeForm_DataPath(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d: %s", w.Code, w.Body.String())
 	}
-	// The panel should have data-path set (URL-encoded path contains the path)
 	body := w.Body.String()
 	if !strings.Contains(body, "data-path=") {
-		t.Error("transcode-panel must have data-path attribute")
+		t.Error("dock must have data-path attribute")
 	}
 	resolvedPath, err := filepath.EvalSymlinks(absPath)
 	if err != nil {
 		t.Fatalf("EvalSymlinks: %v", err)
 	}
 	if !strings.Contains(body, `data-path="`+resolvedPath+`"`) {
-		t.Fatalf("transcode-panel should keep raw absolute path, got:\n%s", body)
+		t.Fatalf("dock should keep raw absolute path, got:\n%s", body)
 	}
 	if strings.Contains(body, "%252F") {
 		t.Fatalf("directory page must not double-encode paths, got:\n%s", body)
 	}
 }
 
-// TestTranscodeForm_CustomParams verifies the custom params section is present.
-func TestTranscodeForm_CustomParams(t *testing.T) {
-	srv, database, libDir := newTestServerWithRealTemplates(t)
-	libID := srv.cfg.Libraries[0].ID
-
-	absPath := filepath.Join(libDir, "Classical")
-	mkdirAll(t, absPath)
-	dirID, err := database.UpsertDirectory(libID, "Classical", "FLAC", false, "")
-	if err != nil {
-		t.Fatalf("UpsertDirectory: %v", err)
-	}
-	database.UpsertTrack(db.Track{ //nolint:errcheck
-		DirectoryID: dirID, Filename: "symphony.flac", Codec: "flac",
-		Bitrate: 1_000_000, Duration: 3600.0, SampleRate: 96000, Channels: 2, Size: 450_000_000,
-	})
-
-	req := httptest.NewRequest(http.MethodGet, apiURL("/dir", map[string]string{"path": absPath}), nil)
-	w := httptest.NewRecorder()
-	srv.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("want 200, got %d: %s", w.Code, w.Body.String())
-	}
-	body := w.Body.String()
-
-	if !strings.Contains(body, "tc_bitrate") {
-		t.Error("expect tc_bitrate input in custom params")
-	}
-	if !strings.Contains(body, "tc_compression") {
-		t.Error("expect tc_compression input in custom params")
-	}
-	if !strings.Contains(body, "tc_copy_meta") {
-		t.Error("expect tc_copy_meta checkbox in custom params")
-	}
-	if !strings.Contains(body, "tc_copy_cover") {
-		t.Error("expect tc_copy_cover checkbox in custom params")
-	}
-}
-
-// TestTranscodeForm_OutputModeLabels verifies the output mode option labels are rendered.
-func TestTranscodeForm_OutputModeLabels(t *testing.T) {
+// TestTranscodeDock_OutputModeLabels verifies the output mode labels are rendered.
+func TestTranscodeDock_OutputModeLabels(t *testing.T) {
 	srv, database, libDir := newTestServerWithRealTemplates(t)
 	libID := srv.cfg.Libraries[0].ID
 

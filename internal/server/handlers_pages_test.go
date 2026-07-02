@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -242,5 +243,63 @@ func TestRealTemplates_IndexRendersHashedViteTagsWithBuiltDist(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), `/static/dist/assets/`) {
 		t.Errorf("real index template should render hashed vite asset tags; got:\n%s", w.Body.String())
+	}
+}
+
+// TestBuildDockPresetsJSON_GroupsByCodecWithOneDefaultEach verifies the dock's preset
+// JSON has an entry for each of DefaultPresets(), grouped under "flac"/"opus", with
+// exactly one preset per codec flagged as the default.
+func TestBuildDockPresetsJSON_GroupsByCodecWithOneDefaultEach(t *testing.T) {
+	raw := buildDockPresetsJSON()
+
+	var grouped map[string][]dockPresetDTO
+	if err := json.Unmarshal([]byte(raw), &grouped); err != nil {
+		t.Fatalf("unmarshal preset JSON: %v\ngot: %s", err, raw)
+	}
+
+	if len(grouped["flac"]) != 3 {
+		t.Fatalf("want 3 flac presets, got %d: %+v", len(grouped["flac"]), grouped["flac"])
+	}
+	if len(grouped["opus"]) != 3 {
+		t.Fatalf("want 3 opus presets, got %d: %+v", len(grouped["opus"]), grouped["opus"])
+	}
+
+	for codec, presets := range grouped {
+		defaults := 0
+		for _, p := range presets {
+			if p.Default {
+				defaults++
+			}
+			if p.Name == "" || p.Label == "" {
+				t.Errorf("codec %q preset missing name/label: %+v", codec, p)
+			}
+		}
+		if defaults != 1 {
+			t.Errorf("codec %q should have exactly one default preset, got %d", codec, defaults)
+		}
+	}
+
+	var balanced, musicHigh dockPresetDTO
+	for _, p := range grouped["flac"] {
+		if p.Name == "Balanced" {
+			balanced = p
+		}
+	}
+	for _, p := range grouped["opus"] {
+		if p.Name == "Music High" {
+			musicHigh = p
+		}
+	}
+	if !balanced.Default {
+		t.Error("expect FLAC \"Balanced\" preset to be the default")
+	}
+	if balanced.Label != "Balanced (compression 5)" {
+		t.Errorf("unexpected FLAC Balanced label: %q", balanced.Label)
+	}
+	if !musicHigh.Default {
+		t.Error("expect Opus \"Music High\" preset to be the default")
+	}
+	if musicHigh.Label != "Music High (160k)" {
+		t.Errorf("unexpected Opus Music High label: %q", musicHigh.Label)
 	}
 }

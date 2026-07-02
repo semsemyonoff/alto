@@ -1,6 +1,7 @@
 {{define "content"}}
 <div id="dir-content" class="dir-page" data-library-id="{{.LibraryID}}">
 
+  <div class="dir-stage">
   <div class="dir-header">
     {{if .HasCover}}
     <img class="dir-cover" src="/api/cover?path={{.Path | urlquery}}" alt="Cover art" loading="lazy">
@@ -20,141 +21,7 @@
         {{end}}
       </div>
     </div>
-    {{if .CanTranscode}}
-    <div class="dir-actions">
-      <button class="btn btn-primary" id="transcode-btn" onclick="altoShowTranscodePanel()">⚡ Transcode</button>
-    </div>
-    {{end}}
   </div>
-
-  {{if .CanTranscode}}
-  <div class="transcode-panel" id="transcode-panel" style="display:none" data-path="{{.Path}}">
-
-    <div id="tc_form_area">
-      <div class="transcode-panel-header">
-        <h2 class="transcode-panel-title">Transcode Directory</h2>
-        <button class="btn btn-ghost tc-close-btn" onclick="altoHideTranscodePanel()" title="Close">✕</button>
-      </div>
-
-      <div class="form-row">
-        <span class="form-label">Codec</span>
-        <div class="codec-radio-group">
-          <label class="codec-radio-option">
-            <input type="radio" name="tc_codec" value="flac" id="tc_codec_flac" checked>
-            <span class="codec-radio-label">FLAC</span>
-            <span class="codec-radio-desc">Lossless</span>
-          </label>
-          <label class="codec-radio-option">
-            <input type="radio" name="tc_codec" value="opus" id="tc_codec_opus">
-            <span class="codec-radio-label">Opus</span>
-            <span class="codec-radio-desc">Lossy</span>
-          </label>
-        </div>
-      </div>
-
-      <div class="form-row">
-        <label class="form-label" for="tc_preset">Preset</label>
-        <select class="form-select" id="tc_preset"></select>
-      </div>
-
-      <div id="tc_custom_params" style="display:none">
-        <div class="form-row" id="tc_custom_flac" data-codec-panel="flac">
-          <label class="form-label" for="tc_compression">Compression Level (0–8)</label>
-          <input class="form-input" id="tc_compression" type="number" min="0" max="8" value="5">
-        </div>
-
-        <div class="form-row" id="tc_custom_opus" data-codec-panel="opus" style="display:none">
-          <label class="form-label" for="tc_bitrate">Bitrate</label>
-          <input class="form-input" id="tc_bitrate" type="text" placeholder="e.g. 160k" value="160k">
-        </div>
-
-        <div class="form-row">
-          <span class="form-label">Common Options</span>
-          <div class="checkbox-group">
-            <label class="checkbox-option"><input type="checkbox" id="tc_copy_meta" checked> Copy metadata</label>
-          </div>
-        </div>
-
-        <div class="form-row" id="tc_flac_options" data-codec-panel="flac">
-          <span class="form-label">Options</span>
-          <div class="checkbox-group">
-            <label class="checkbox-option"><input type="checkbox" id="tc_copy_cover" checked> Copy cover art</label>
-          </div>
-        </div>
-      </div>
-
-      <div class="form-row">
-        <span class="form-label">Output mode</span>
-        <div class="output-mode-group">
-          <label class="output-mode-option">
-            <input type="radio" name="tc_output_mode" value="shared" id="tc_mode_shared" checked>
-            <span class="output-mode-text">
-              <strong class="output-mode-label">Shared /out</strong>
-              <small class="output-mode-desc">Mirror path under shared output directory</small>
-            </span>
-          </label>
-          <label class="output-mode-option">
-            <input type="radio" name="tc_output_mode" value="local" id="tc_mode_local">
-            <span class="output-mode-text">
-              <strong class="output-mode-label">Local (alto-out/)</strong>
-              <small class="output-mode-desc">Subdirectory inside source folder</small>
-            </span>
-          </label>
-          <label class="output-mode-option output-mode-danger">
-            <input type="radio" name="tc_output_mode" value="replace" id="tc_mode_replace">
-            <span class="output-mode-text">
-              <strong class="output-mode-label">Replace ⚠</strong>
-              <small class="output-mode-desc">Overwrite originals (atomic, rollback on failure)</small>
-            </span>
-          </label>
-        </div>
-        <div class="replace-warning" id="tc_replace_warning" style="display:none">
-          ⚠ Replace mode overwrites original files. A backup is created automatically and restored if any error occurs. Use with caution.
-        </div>
-      </div>
-
-      <div class="form-actions">
-        <button class="btn btn-primary" id="tc_start_btn" onclick="altoStartTranscode()">▶ Start</button>
-        <span class="transcode-error" id="tc_error" style="display:none"></span>
-      </div>
-    </div>
-
-    <div id="tc_progress_area" style="display:none">
-      <div class="transcode-panel-header">
-        <h2 class="transcode-panel-title">Transcoding…</h2>
-      </div>
-
-      <div class="progress-section">
-        <div class="progress-label-row">
-          <span id="tc_progress_file" class="progress-current-file">Preparing…</span>
-          <span id="tc_progress_pct" class="progress-pct">0%</span>
-        </div>
-        <div class="progress-track">
-          <div class="progress-fill" id="tc_progress_fill" style="width:0%"></div>
-        </div>
-        <div class="progress-file-row">
-          <span class="text-muted">Track:</span>
-          <span id="tc_file_counter">0 of 0</span>
-          <span class="text-muted">File progress:</span>
-          <span id="tc_file_pct">0%</span>
-        </div>
-      </div>
-
-      <details class="transcode-log">
-        <summary class="transcode-log-summary">Log</summary>
-        <pre class="transcode-log-body" id="tc_log_body">Loading…</pre>
-      </details>
-
-      <div class="transcode-result" id="tc_result" style="display:none"></div>
-
-      <div class="form-actions" id="tc_done_actions" style="display:none">
-        <button class="btn btn-ghost" onclick="altoHideTranscodePanel()">Close</button>
-        <button class="btn btn-secondary" id="tc_reindex_btn" style="display:none" onclick="altoPostTranscodeReindex()">↻ Re-index Library</button>
-      </div>
-    </div>
-
-  </div>
-  {{end}}
 
   {{if .Tracks}}
   <div class="tracks-section" x-data="{ showTech: false }">
@@ -203,297 +70,96 @@
     <p class="text-muted">Click ↻ Re-index to scan the library.</p>
   </div>
   {{end}}
+  </div>
 
-  <script>
-  (function(){
-    var PRESETS = {
-      flac: [
-        {v:'Fast',            l:'Fast (compression 0)'},
-        {v:'Balanced',        l:'Balanced (compression 5)', def:true},
-        {v:'Max Compression', l:'Max Compression (compression 8)'}
-      ],
-      opus: [
-        {v:'Music Balanced', l:'Music Balanced (128k)'},
-        {v:'Music High',     l:'Music High (160k)', def:true},
-        {v:'Archive Lossy',  l:'Archive Lossy (192k)'}
-      ]
-    };
+  {{if .Tracks}}
+  <aside class="dock"
+         id="tc-dock"
+         data-path="{{.Path}}"
+         data-can-transcode="{{.CanTranscode}}"
+         data-track-count="{{.TrackCount}}"
+         data-library-id="{{.LibraryID}}"
+         x-data="altoDock()">
+    <div class="dock-head"><span class="t">Transcode</span></div>
+    <div class="dock-body">
+      <div class="dock-target">directory &middot; <b>{{.DirName}}</b></div>
 
-    function el(id){ return document.getElementById(id); }
+      <div>
+        <div class="flabel">Codec</div>
+        <div class="codec" :data-codec="codec">
+          <div class="slider"></div>
+          <button type="button" class="opt" :class="{ on: codec === 'flac' }" @click="setCodec('flac')">
+            <div class="cn">FLAC</div><div class="cs">Lossless</div>
+          </button>
+          <button type="button" class="opt" :class="{ on: codec === 'opus' }" @click="setCodec('opus')">
+            <div class="cn">Opus</div><div class="cs">Lossy</div>
+          </button>
+        </div>
+      </div>
 
-    function selectedCodec(){
-      var codecEl = document.querySelector('input[name="tc_codec"]:checked');
-      return codecEl ? codecEl.value : 'flac';
-    }
+      <div>
+        <div class="flabel">Preset</div>
+        <div class="preset-wrap">
+          <button type="button" class="preset" id="tc_preset_btn" :class="{ open: presetOpen }" @click="presetOpen = !presetOpen">
+            <span class="pv" x-text="presetLabel"></span><span class="pk">&#9662;</span>
+          </button>
+          <div class="preset-menu" id="tc_preset_menu" :class="{ open: presetOpen }">
+            <template x-for="p in presets" :key="p.name">
+              <div class="pitem" :class="{ sel: p.name === preset }" @click="selectPreset(p.name)">
+                <span x-text="p.label"></span><span class="pck">&#10003;</span>
+              </div>
+            </template>
+          </div>
+        </div>
+      </div>
 
-    function syncCustomPanels(){
-      var customWrap = el('tc_custom_params');
-      var presetSel = el('tc_preset');
-      var codec = selectedCodec();
-      var isCustom = !!presetSel && presetSel.value === 'custom';
-      if (customWrap) customWrap.style.display = isCustom ? 'block' : 'none';
+      <div>
+        <div class="flabel">Output mode</div>
+        <div class="modes">
+          <button type="button" class="mode" id="tc_mode_shared" :class="{ on: outputMode === 'shared' }" @click="outputMode = 'shared'">
+            <span class="led"></span><span class="mt"><b>Shared /out</b><small>Mirror path under shared output directory</small></span>
+          </button>
+          <button type="button" class="mode" id="tc_mode_local" :class="{ on: outputMode === 'local' }" @click="outputMode = 'local'">
+            <span class="led"></span><span class="mt"><b>Local (alto-out/)</b><small>Subdirectory inside source folder</small></span>
+          </button>
+          <button type="button" class="mode warn" id="tc_mode_replace" :class="{ on: outputMode === 'replace' }" @click="outputMode = 'replace'">
+            <span class="led"></span><span class="mt"><b>Replace &#9888;</b><small>Overwrite originals (atomic, rollback on failure)</small></span>
+          </button>
+        </div>
+      </div>
 
-      document.querySelectorAll('[data-codec-panel]').forEach(function(panel){
-        panel.style.display = isCustom && panel.getAttribute('data-codec-panel') === codec ? 'flex' : 'none';
-      });
-    }
+      <div class="dock-progress" id="tc_progress" x-show="jobId" x-cloak>
+        <div class="dock-progress-row">
+          <span x-text="progressFile"></span>
+          <span x-text="Math.round(progressPct) + '%'"></span>
+        </div>
+        <div class="dock-progress-track">
+          <div class="dock-progress-fill" :style="'width:' + progressPct + '%'"></div>
+        </div>
+        <p class="dock-result" id="tc_result" :class="resultOk ? 'ok' : 'err'" x-show="resultText" x-text="resultText"></p>
+        <button type="button"
+                class="btn-reindex-dock"
+                id="tc_reindex_btn"
+                x-show="resultOk && (outputMode === 'local' || outputMode === 'shared')"
+                x-cloak
+                @click="reindex()">&#8635; Re-index Library</button>
+      </div>
 
-    function populatePresets(codec){
-      var sel = el('tc_preset');
-      if(!sel) return;
-      sel.innerHTML = '';
-      (PRESETS[codec]||[]).forEach(function(p){
-        var opt = document.createElement('option');
-        opt.value = p.v;
-        opt.textContent = p.l;
-        if(p.def) opt.selected = true;
-        sel.appendChild(opt);
-      });
-      var custom = document.createElement('option');
-      custom.value = 'custom';
-      custom.textContent = 'Custom…';
-      sel.appendChild(custom);
-      syncCustomPanels();
-    }
+      <p class="dock-error" id="tc_error" x-show="error" x-text="error"></p>
+    </div>
 
-    document.querySelectorAll('input[name="tc_codec"]').forEach(function(r){
-      r.addEventListener('change', function(){
-        if(this.checked) populatePresets(this.value);
-      });
-    });
-
-    var presetSel = el('tc_preset');
-    if(presetSel){
-      presetSel.addEventListener('change', syncCustomPanels);
-    }
-
-    document.querySelectorAll('input[name="tc_output_mode"]').forEach(function(r){
-      r.addEventListener('change', function(){
-        var warn = el('tc_replace_warning');
-        if(warn) warn.style.display = this.value === 'replace' ? 'block' : 'none';
-      });
-    });
-
-    window.altoShowTranscodePanel = function(){
-      var panel = el('transcode-panel');
-      var btn = el('transcode-btn');
-      if(panel) panel.style.display = 'block';
-      if(btn) btn.style.display = 'none';
-      if(panel) panel.scrollIntoView({behavior:'smooth', block:'nearest'});
-    };
-
-    window.altoHideTranscodePanel = function(){
-      var panel = el('transcode-panel');
-      var btn = el('transcode-btn');
-      if(panel) panel.style.display = 'none';
-      if(btn) btn.style.display = '';
-      altoResetTranscode();
-    };
-
-    window.altoStartTranscode = function(){
-      var panel = el('transcode-panel');
-      if(!panel) return;
-      var path = panel.getAttribute('data-path');
-
-      var codecEl = document.querySelector('input[name="tc_codec"]:checked');
-      var modeEl = document.querySelector('input[name="tc_output_mode"]:checked');
-      if(!codecEl || !modeEl) return;
-
-      var codec = codecEl.value;
-      var preset = el('tc_preset') ? el('tc_preset').value : 'Balanced';
-      var mode = modeEl.value;
-
-      if(mode === 'replace'){
-        if(!confirm('Replace mode will overwrite original files.\nA backup is made and restored on failure.\n\nContinue?')){
-          return;
-        }
-      }
-
-      var body = {path:path, codec:codec, preset:preset, output_mode:mode};
-
-      if(preset === 'custom'){
-        if(codec === 'opus'){
-          var br = el('tc_bitrate') ? el('tc_bitrate').value.trim() : '';
-          if(br) body.bitrate = br;
-        }
-        if(codec === 'flac'){
-          var compEl = el('tc_compression');
-          if(compEl && compEl.value !== ''){
-            var cl = parseInt(compEl.value, 10);
-            if(!isNaN(cl)) body.compression_level = cl;
-          }
-        }
-        var metaEl = el('tc_copy_meta');
-        var coverEl = el('tc_copy_cover');
-        if(metaEl) body.copy_metadata = metaEl.checked;
-        if(codec === 'flac' && coverEl) body.copy_cover = coverEl.checked;
-      }
-
-      var errEl = el('tc_error');
-      var startBtn = el('tc_start_btn');
-      if(errEl) errEl.style.display = 'none';
-      if(startBtn){ startBtn.disabled = true; startBtn.textContent = 'Starting…'; }
-
-      fetch('/api/transcode', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify(body)
-      })
-      .then(function(r){ return r.json(); })
-      .then(function(data){
-        if(data.error){
-          showTcError(data.error);
-          return;
-        }
-        startProgress(data.job_id, mode);
-      })
-      .catch(function(err){ showTcError(String(err)); });
-    };
-
-    function showTcError(msg){
-      var errEl = el('tc_error');
-      var startBtn = el('tc_start_btn');
-      if(errEl){ errEl.textContent = msg; errEl.style.display = 'inline'; }
-      if(startBtn){ startBtn.disabled = false; startBtn.textContent = '▶ Start'; }
-    }
-
-    var _es = null;
-    var _logTimer = null;
-    var _tcMode = 'shared';
-
-    function startProgress(jobId, mode){
-      _tcMode = mode || 'shared';
-      var formArea = el('tc_form_area');
-      var progressArea = el('tc_progress_area');
-      if(formArea) formArea.style.display = 'none';
-      if(progressArea) progressArea.style.display = 'block';
-
-      _es = new EventSource('/api/transcode/' + jobId + '/progress');
-
-      _es.addEventListener('progress', function(e){
-        try{
-          var p = JSON.parse(e.data);
-          var fileEl = el('tc_progress_file');
-          var pctEl = el('tc_progress_pct');
-          var fillEl = el('tc_progress_fill');
-          var filePctEl = el('tc_file_pct');
-          var fileCounterEl = el('tc_file_counter');
-          if(fileEl) fileEl.textContent = p.current_file || 'Processing…';
-          if(pctEl) pctEl.textContent = Math.round(p.overall_percent || 0) + '%';
-          if(fillEl) fillEl.style.width = (p.overall_percent || 0) + '%';
-          if(filePctEl) filePctEl.textContent = Math.round(p.file_percent || 0) + '%';
-          if(fileCounterEl) {
-            var currentNumber = p.current_file_number || ((typeof p.file_index === 'number') ? (p.file_index + 1) : 0);
-            fileCounterEl.textContent = currentNumber + ' of ' + (p.total_files || 0);
-          }
-        }catch(_){}
-      });
-
-      _es.addEventListener('done', function(e){
-        _es.close(); _es = null;
-        clearInterval(_logTimer); _logTimer = null;
-        try{
-          var p = JSON.parse(e.data);
-          var fillEl = el('tc_progress_fill');
-          var pctEl = el('tc_progress_pct');
-          var resultEl = el('tc_result');
-          var doneActions = el('tc_done_actions');
-          if(p.status === 'done'){
-            if(fillEl) fillEl.style.width = '100%';
-            if(pctEl) pctEl.textContent = '100%';
-            if(resultEl){
-              resultEl.textContent = '✓ Transcoding complete';
-              resultEl.className = 'transcode-result transcode-result-ok';
-              resultEl.style.display = 'block';
-            }
-          } else {
-            if(resultEl){
-              resultEl.textContent = '✗ ' + (p.error || 'Transcoding failed');
-              resultEl.className = 'transcode-result transcode-result-err';
-              resultEl.style.display = 'block';
-            }
-          }
-          if(doneActions) doneActions.style.display = 'block';
-          var reindexBtn = el('tc_reindex_btn');
-          if(reindexBtn && p.status === 'done' && (_tcMode === 'local' || _tcMode === 'shared')){
-            reindexBtn.style.display = '';
-          }
-        }catch(_){}
-        fetchLog(jobId);
-      });
-
-      _es.onerror = function(){
-        var resultEl = el('tc_result');
-        if(resultEl && resultEl.style.display === 'none'){
-          resultEl.textContent = '✗ Connection lost — check server log';
-          resultEl.className = 'transcode-result transcode-result-err';
-          resultEl.style.display = 'block';
-        }
-      };
-
-      _logTimer = setInterval(function(){ fetchLog(jobId); }, 3000);
-    }
-
-    function fetchLog(jobId){
-      fetch('/api/transcode/' + jobId + '/log?n=50')
-      .then(function(r){ return r.json(); })
-      .then(function(d){
-        var logEl = el('tc_log_body');
-        if(logEl && d.lines && d.lines.length){
-          logEl.textContent = d.lines.join('\n');
-          var details = logEl.closest('details');
-          if(details && details.open) logEl.scrollTop = logEl.scrollHeight;
-        }
-      })
-      .catch(function(){});
-    }
-
-    function altoResetTranscode(){
-      if(_es){ _es.close(); _es = null; }
-      if(_logTimer){ clearInterval(_logTimer); _logTimer = null; }
-      var formArea = el('tc_form_area');
-      var progressArea = el('tc_progress_area');
-      var resultEl = el('tc_result');
-      var doneActions = el('tc_done_actions');
-      var startBtn = el('tc_start_btn');
-      var errEl = el('tc_error');
-      var logEl = el('tc_log_body');
-      var reindexBtn = el('tc_reindex_btn');
-      var fileCounterEl = el('tc_file_counter');
-      var filePctEl = el('tc_file_pct');
-      var pctEl = el('tc_progress_pct');
-      var fillEl = el('tc_progress_fill');
-      var fileEl = el('tc_progress_file');
-      if(formArea) formArea.style.display = 'block';
-      if(progressArea) progressArea.style.display = 'none';
-      if(resultEl){ resultEl.style.display = 'none'; resultEl.textContent = ''; }
-      if(doneActions) doneActions.style.display = 'none';
-      if(startBtn){ startBtn.disabled = false; startBtn.textContent = '▶ Start'; }
-      if(errEl) errEl.style.display = 'none';
-      if(logEl) logEl.textContent = 'Loading…';
-      if(reindexBtn) reindexBtn.style.display = 'none';
-      if(fileCounterEl) fileCounterEl.textContent = '0 of 0';
-      if(filePctEl) filePctEl.textContent = '0%';
-      if(pctEl) pctEl.textContent = '0%';
-      if(fillEl) fillEl.style.width = '0%';
-      if(fileEl) fileEl.textContent = 'Preparing…';
-      syncCustomPanels();
-    }
-
-    window.altoPostTranscodeReindex = function(){
-      var dirContent = document.getElementById('dir-content');
-      var libId = dirContent ? dirContent.getAttribute('data-library-id') : null;
-      if(typeof window.altoTriggerScan === 'function'){
-        window.altoTriggerScan(libId);
-      } else {
-        var url = '/api/scan' + (libId ? '?library_id=' + encodeURIComponent(libId) : '');
-        fetch(url, {method: 'POST'}).catch(function(){});
-      }
-    };
-
-    if(el('tc_preset')) populatePresets('flac');
-  })();
-  </script>
+    <div class="dock-foot">
+      <button type="button" class="start" id="tc_start_btn" :disabled="!canStart" @click="start()">
+        <span class="pwr"></span>
+      </button>
+      <div class="start-lbl">
+        <b x-text="starting ? 'STARTING…' : 'START'"></b>
+        <small x-text="statusText"></small>
+      </div>
+    </div>
+  </aside>
+  <script type="application/json" id="tc-presets-data">{{.PresetsJSON}}</script>
+  {{end}}
 
 </div>
 {{end}}

@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"html/template"
@@ -15,6 +16,7 @@ import (
 	"sync"
 
 	"github.com/semsemyonoff/ALTO/internal/db"
+	"github.com/semsemyonoff/ALTO/internal/transcode"
 )
 
 // sharedTemplateFiles are partials included (if present) alongside every
@@ -264,6 +266,59 @@ type dirPageData struct {
 	TotalDuration string
 	TotalSize     string
 	Tracks        []trackRow
+	PresetsJSON   template.JS // transcode.DefaultPresets() grouped by codec, for the dock's Alpine component
+}
+
+// dockPresetDTO is one transcode preset as shaped for the dock's Alpine component.
+type dockPresetDTO struct {
+	Name    string `json:"name"`
+	Label   string `json:"label"`
+	Default bool   `json:"default,omitempty"`
+}
+
+// dockPresetLabel formats a display label for a preset's codec-specific parameter.
+func dockPresetLabel(p transcode.Preset) string {
+	switch p.Codec {
+	case transcode.CodecFLAC:
+		return fmt.Sprintf("%s (compression %d)", p.Name, p.CompressionLevel)
+	case transcode.CodecOpus:
+		return fmt.Sprintf("%s (%s)", p.Name, p.Bitrate)
+	default:
+		return p.Name
+	}
+}
+
+// dockDefaultPreset reports whether p is the dock's pre-selected preset for its codec.
+func dockDefaultPreset(p transcode.Preset) bool {
+	switch p.Codec {
+	case transcode.CodecFLAC:
+		return p.Name == transcode.FLACBalanced.Name
+	case transcode.CodecOpus:
+		return p.Name == transcode.OpusMusicHigh.Name
+	default:
+		return false
+	}
+}
+
+// buildDockPresetsJSON marshals transcode.DefaultPresets(), grouped by codec, for the
+// dock's Alpine component. The output is generated entirely from built-in preset
+// constants (no user input), so embedding it as template.JS is safe.
+func buildDockPresetsJSON() template.JS {
+	grouped := make(map[string][]dockPresetDTO)
+	for _, p := range transcode.DefaultPresets() {
+		codec := string(p.Codec)
+		grouped[codec] = append(grouped[codec], dockPresetDTO{
+			Name:    p.Name,
+			Label:   dockPresetLabel(p),
+			Default: dockDefaultPreset(p),
+		})
+	}
+	b, err := json.Marshal(grouped)
+	if err != nil {
+		slog.Error("buildDockPresetsJSON: marshal", "err", err)
+		return "{}"
+	}
+	return template.JS(b) //nolint:gosec // b is generated from static built-in presets, not user input
 }
 
 func isLosslessCodec(codec string) bool {
@@ -434,6 +489,7 @@ func buildDirPageData(lib LibraryConfig, dir *db.Directory, tracks []db.Track, r
 		TotalDuration: fmtDuration(totalDuration),
 		TotalSize:     fmtSize(totalSize),
 		Tracks:        rows,
+		PresetsJSON:   buildDockPresetsJSON(),
 	}
 }
 

@@ -177,8 +177,8 @@ func TestScanUI_ReindexOfferRendered(t *testing.T) {
 	if !strings.Contains(body, "tc_reindex_btn") {
 		t.Error("directory page should contain tc_reindex_btn element for post-transcode re-index offer")
 	}
-	if !strings.Contains(body, "altoPostTranscodeReindex") {
-		t.Error("directory page should reference altoPostTranscodeReindex JS function")
+	if !strings.Contains(body, `@click="reindex()"`) {
+		t.Error("directory page should wire the re-index button to the dock's reindex() method")
 	}
 }
 
