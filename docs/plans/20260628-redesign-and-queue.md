@@ -141,10 +141,10 @@ The redesign comes from the approved Claude Design prototype; a decoded local co
 **Files:**
 - Modify: `internal/server/handlers_transcode.go`, `internal/server/server.go`, `internal/server/handlers_transcode_test.go`
 
-- [ ] add `handleJobEvents`: SSE headers, `subscribeEventsWithSnapshot`, replay snapshot then stream `update`, unsubscribe on disconnect
-- [ ] register `GET /api/jobs/events`; **do not** remove the per-job progress endpoint yet (kept working until Task 18)
-- [ ] write tests: SSE replays snapshot then a live delta; disconnect unsubscribes (no leak under `-race`)
-- [ ] run tests — must pass before next task
+- [x] add `handleJobEvents`: SSE headers, `subscribeEventsWithSnapshot`, replay snapshot then stream `update`, unsubscribe on disconnect
+- [x] register `GET /api/jobs/events`; **do not** remove the per-job progress endpoint yet (kept working until Task 18)
+- [x] write tests: SSE replays snapshot then a live delta; disconnect unsubscribes (no leak under `-race`)
+- [x] run tests — must pass before next task
 
 ### Task 7: `POST /api/jobs/{id}/cancel` endpoint
 

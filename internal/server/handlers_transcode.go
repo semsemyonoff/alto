@@ -171,6 +171,52 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"jobs": s.jobs.snapshotJobs()})
 }
 
+// handleJobEvents streams the global queue-panel event feed via SSE: it
+// replays a snapshot of every currently tracked job as an initial burst of
+// "update" events, then streams live deltas as they occur. The snapshot and
+// subscription are registered atomically (subscribeEventsWithSnapshot), so no
+// update landing between the two can be missed or duplicated.
+// GET /api/jobs/events
+func (s *Server) handleJobEvents(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	ch, snapshot := s.jobs.subscribeEventsWithSnapshot()
+	defer s.jobs.unsubscribeEvents(ch)
+
+	for _, ev := range snapshot {
+		writeJobEvent(w, ev)
+	}
+	flusher.Flush()
+
+	ctx := r.Context()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case ev, open := <-ch:
+			if !open {
+				return
+			}
+			writeJobEvent(w, ev)
+			flusher.Flush()
+		}
+	}
+}
+
+// writeJobEvent writes a single "update" SSE event for a jobEvent.
+func writeJobEvent(w http.ResponseWriter, ev jobEvent) {
+	data, _ := json.Marshal(ev)
+	_, _ = fmt.Fprintf(w, "event: update\ndata: %s\n\n", data)
+}
+
 // handleTranscodeProgress streams real-time progress for a job via SSE.
 // GET /api/transcode/{jobID}/progress
 func (s *Server) handleTranscodeProgress(w http.ResponseWriter, r *http.Request) {

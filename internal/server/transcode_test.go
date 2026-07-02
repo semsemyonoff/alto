@@ -585,6 +585,102 @@ func TestHandleJobs_MixedStatus(t *testing.T) {
 	}
 }
 
+// --- GET /api/jobs/events ---
+
+func TestHandleJobEvents_SnapshotThenLiveDelta(t *testing.T) {
+	jm := newJobManager(nil, 0, context.Background())
+	srv := &Server{jobs: jm}
+
+	// job1 is registered before the subscription starts, so it must appear in
+	// the initial snapshot burst.
+	if _, started := jm.start("job1", "/dir1", transcode.Job{ID: "job1"}, "Album One", "flac -> opus/Balanced"); !started {
+		t.Fatalf("start job1: expected success")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodGet, "/api/jobs/events", nil).WithContext(ctx)
+	w := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		srv.handleJobEvents(w, req)
+	}()
+
+	// Give the handler time to subscribe and flush the snapshot before job2 starts.
+	time.Sleep(50 * time.Millisecond)
+
+	// job2 is registered after the subscription starts, so it must arrive as a
+	// live delta rather than in the snapshot.
+	if _, started := jm.start("job2", "/dir2", transcode.Job{ID: "job2"}, "Album Two", "flac -> opus/Balanced"); !started {
+		t.Fatalf("start job2: expected success")
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("handler did not return after context cancel")
+	}
+
+	body := w.Body.String()
+	if !strings.Contains(body, `"id":"job1"`) {
+		t.Errorf("expected snapshot event for job1, got: %s", body)
+	}
+	if !strings.Contains(body, `"id":"job2"`) {
+		t.Errorf("expected live delta event for job2, got: %s", body)
+	}
+	if got := strings.Count(body, "event: update"); got < 2 {
+		t.Errorf("expected at least 2 update events, got %d in: %s", got, body)
+	}
+}
+
+func TestHandleJobEvents_DisconnectUnsubscribes(t *testing.T) {
+	jm := newJobManager(nil, 0, context.Background())
+	srv := &Server{jobs: jm}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodGet, "/api/jobs/events", nil).WithContext(ctx)
+	w := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		srv.handleJobEvents(w, req)
+	}()
+
+	var subscribed bool
+	for range 100 {
+		jm.mu.Lock()
+		subscribed = len(jm.eventSubs) == 1
+		jm.mu.Unlock()
+		if subscribed {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !subscribed {
+		t.Fatal("handler did not register subscription in time")
+	}
+
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("handler did not return after context cancel")
+	}
+
+	jm.mu.Lock()
+	remaining := len(jm.eventSubs)
+	jm.mu.Unlock()
+	if remaining != 0 {
+		t.Errorf("expected subscriber removed after disconnect, got %d remaining", remaining)
+	}
+}
+
 // --- SSE event format ---
 
 func TestSSEEventFormat(t *testing.T) {
