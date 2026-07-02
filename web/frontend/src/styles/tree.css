@@ -15,43 +15,6 @@
   opacity: 0.55;
 }
 
-.library-selector {
-  padding: 14px 16px 10px;
-  border-bottom: 1px solid var(--hair);
-}
-
-.library-selector label {
-  display: block;
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.18em;
-  color: var(--ink-mute);
-  margin-bottom: 6px;
-}
-
-.library-select {
-  width: 100%;
-  background: var(--corpus-0);
-  border: 1px solid var(--hair-strong);
-  border-radius: 8px;
-  color: var(--ink);
-  font-family: var(--fb);
-  padding: 8px 28px 8px 10px;
-  font-size: 12.5px;
-  cursor: pointer;
-  appearance: none;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23776d5d' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 10px center;
-  transition: 0.15s;
-}
-
-.library-select:focus {
-  outline: none;
-  border-color: rgba(58, 212, 196, 0.45);
-  box-shadow: var(--glow);
-}
-
 .tree-section {
   flex: 1;
   overflow-y: auto;

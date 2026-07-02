@@ -244,10 +244,13 @@ type trackRow struct {
 
 // appShellData is the shared shell state for pages rendered inside the main app layout.
 type appShellData struct {
-	Libraries   []db.Library
-	SelectedID  int64
-	Notice      string
-	TopDirsHTML template.HTML // pre-rendered tree node HTML
+	Libraries          []db.Library
+	SelectedID         int64
+	SelectedName       string
+	SelectedIndexed    bool
+	SelectedTrackCount int
+	Notice             string
+	TopDirsHTML        template.HTML // pre-rendered tree node HTML
 }
 
 // dirPageData is the template data for the audio directory detail page.
@@ -429,6 +432,19 @@ func (s *Server) buildAppShellData(selectedID int64) (appShellData, error) {
 	if data.SelectedID == 0 {
 		data.SelectedID = libs[0].ID
 	}
+
+	counts, err := s.db.GetLibraryTrackCounts()
+	if err != nil {
+		slog.Error("buildAppShellData: GetLibraryTrackCounts", "err", err)
+	}
+	for _, l := range libs {
+		if l.ID == data.SelectedID {
+			data.SelectedName = l.Name
+			break
+		}
+	}
+	data.SelectedTrackCount = counts[data.SelectedID]
+	data.SelectedIndexed = data.SelectedTrackCount > 0
 
 	libCfg, ok := findLibConfigByID(s.cfg, data.SelectedID)
 	if !ok {

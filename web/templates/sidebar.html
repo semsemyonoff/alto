@@ -1,16 +1,4 @@
 {{define "sidebar"}}
-{{if .Libraries}}
-<div class="library-selector">
-  <label for="library-select">Library</label>
-  <select id="library-select" class="library-select"
-          onchange="htmx.ajax('GET','/api/tree/'+this.value+'/children',{target:'#tree-root',swap:'innerHTML'})">
-    {{range .Libraries}}
-    <option value="{{.ID}}"{{if eq $.SelectedID .ID}} selected{{end}}>{{.Name}}</option>
-    {{end}}
-  </select>
-</div>
-{{end}}
-
 <div class="tree-section">
   <div class="tree-section-header">Directories</div>
   <div class="tree-search">

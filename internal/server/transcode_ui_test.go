@@ -130,7 +130,7 @@ func TestTranscodeDock_RenderedWithTracks(t *testing.T) {
 	if !strings.Contains(body, `"flac"`) || !strings.Contains(body, `"opus"`) {
 		t.Error("expect the presets JSON to include both flac and opus groups")
 	}
-	if !strings.Contains(body, "library-select") || !strings.Contains(body, "tree-root") {
+	if !strings.Contains(body, "libwrap") || !strings.Contains(body, "tree-root") {
 		t.Error("expect direct /dir page to render the full app shell")
 	}
 }

@@ -367,8 +367,8 @@ func TestHandleDirPage_RealTemplates_RendersUnifiedShell(t *testing.T) {
 	if !strings.Contains(body, "scan-btn") {
 		t.Error("directory page should render the shared Re-index control from base.html")
 	}
-	if !strings.Contains(body, `id="library-select"`) || !strings.Contains(body, `id="tree-root"`) {
-		t.Error("directory page should render the shared sidebar partial (library selector + tree)")
+	if !strings.Contains(body, `class="libwrap"`) || !strings.Contains(body, `id="tree-root"`) {
+		t.Error("directory page should render the shared topbar library selector + sidebar tree partial")
 	}
 }
 

@@ -296,10 +296,10 @@ The redesign comes from the approved Claude Design prototype; a decoded local co
 - Modify: `internal/server/handlers_api.go` (`libraryDTO` + `handleLibraries`), `internal/server/handlers_api_test.go`, `internal/db/db.go` (per-library track count), `web/templates/base.html` (library menu)
 - Create: `web/frontend/src/libmenu.ts`
 
-- [ ] add a per-library track-count query; extend `libraryDTO` with `Indexed`/`TrackCount`; populate in `handleLibraries`
-- [ ] rebuild the topbar library selector + dropdown (Alpine) showing count / "not indexed"; switching loads its tree (HTMX) + updates the status dot
-- [ ] write Go tests for the DTO (indexed true/false, counts) + count query; Vitest test for menu state if non-trivial
-- [ ] run tests + `npm run build` — must pass before next task
+- [x] add a per-library track-count query; extend `libraryDTO` with `Indexed`/`TrackCount`; populate in `handleLibraries`
+- [x] rebuild the topbar library selector + dropdown (Alpine) showing count / "not indexed"; switching loads its tree (HTMX) + updates the status dot
+- [x] write Go tests for the DTO (indexed true/false, counts) + count query; Vitest test for menu state if non-trivial
+- [x] run tests + `npm run build` — must pass before next task
 
 ### Task 20: Standby / empty / scan-progress (+ scanner progress hook)
 

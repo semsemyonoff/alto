@@ -16,9 +16,11 @@ import (
 // --- Response DTOs ---
 
 type libraryDTO struct {
-	ID   int64  `json:"id"`
-	Name string `json:"name"`
-	Path string `json:"path"`
+	ID         int64  `json:"id"`
+	Name       string `json:"name"`
+	Path       string `json:"path"`
+	Indexed    bool   `json:"indexed"`
+	TrackCount int    `json:"track_count"`
 }
 
 type directoryDTO struct {
@@ -60,9 +62,15 @@ func (s *Server) handleLibraries(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+	counts, err := s.db.GetLibraryTrackCounts()
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
 	dtos := make([]libraryDTO, len(libs))
 	for i, l := range libs {
-		dtos[i] = libraryDTO{ID: l.ID, Name: l.Name, Path: l.Path}
+		count := counts[l.ID]
+		dtos[i] = libraryDTO{ID: l.ID, Name: l.Name, Path: l.Path, TrackCount: count, Indexed: count > 0}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"libraries": dtos})
 }

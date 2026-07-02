@@ -383,6 +383,31 @@ func (db *DB) GetLibraries() ([]Library, error) {
 	return libs, rows.Err()
 }
 
+// GetLibraryTrackCounts returns the number of indexed tracks per library,
+// keyed by library ID. Libraries with no tracks are omitted from the map.
+func (db *DB) GetLibraryTrackCounts() (map[int64]int, error) {
+	rows, err := db.sql.Query(`
+		SELECT d.library_id, COUNT(t.id)
+		FROM tracks t
+		JOIN directories d ON d.id = t.directory_id
+		GROUP BY d.library_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	counts := make(map[int64]int)
+	for rows.Next() {
+		var libraryID int64
+		var count int
+		if err := rows.Scan(&libraryID, &count); err != nil {
+			return nil, err
+		}
+		counts[libraryID] = count
+	}
+	return counts, rows.Err()
+}
+
 // GetDirectoryTree returns all directories for a library.
 func (db *DB) GetDirectoryTree(libraryID int64) ([]Directory, error) {
 	rows, err := db.sql.Query(

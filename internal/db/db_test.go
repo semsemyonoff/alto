@@ -378,6 +378,47 @@ func TestGetLibraries(t *testing.T) {
 	}
 }
 
+// TestGetLibraryTrackCounts verifies per-library track counts, including a
+// library with zero tracks (omitted from the map) and a library with an
+// indexed but empty (non-audio) directory.
+func TestGetLibraryTrackCounts(t *testing.T) {
+	db := openMem(t)
+
+	indexed, err := db.UpsertLibrary("indexed", "/mnt/indexed")
+	if err != nil {
+		t.Fatalf("UpsertLibrary indexed: %v", err)
+	}
+	empty, err := db.UpsertLibrary("empty", "/mnt/empty")
+	if err != nil {
+		t.Fatalf("UpsertLibrary empty: %v", err)
+	}
+
+	dirID, err := db.UpsertDirectoryWithAudioFlag(indexed, "album", "FLAC", false, "", true)
+	if err != nil {
+		t.Fatalf("UpsertDirectoryWithAudioFlag: %v", err)
+	}
+	for _, name := range []string{"a.flac", "b.flac", "c.flac"} {
+		if err := db.UpsertTrack(Track{DirectoryID: dirID, Filename: name}); err != nil {
+			t.Fatalf("UpsertTrack %s: %v", name, err)
+		}
+	}
+
+	if _, err := db.UpsertDirectoryWithAudioFlag(empty, "not-audio", "", false, "", false); err != nil {
+		t.Fatalf("UpsertDirectoryWithAudioFlag empty: %v", err)
+	}
+
+	counts, err := db.GetLibraryTrackCounts()
+	if err != nil {
+		t.Fatalf("GetLibraryTrackCounts: %v", err)
+	}
+	if counts[indexed] != 3 {
+		t.Errorf("counts[indexed] = %d, want 3", counts[indexed])
+	}
+	if _, ok := counts[empty]; ok {
+		t.Errorf("counts[empty] = %d, want absent from map", counts[empty])
+	}
+}
+
 // TestConcurrentReadWrite exercises concurrent goroutine access for goroutine safety.
 func TestConcurrentReadWrite(t *testing.T) {
 	db := openMem(t)

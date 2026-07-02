@@ -126,6 +126,44 @@ func TestHandleLibraries_WithData(t *testing.T) {
 	if lib["name"] != "TestLib" {
 		t.Errorf("want name TestLib, got %v", lib["name"])
 	}
+	if lib["indexed"] != false {
+		t.Errorf("want indexed false for an unscanned library, got %v", lib["indexed"])
+	}
+	if lib["track_count"] != float64(0) {
+		t.Errorf("want track_count 0, got %v", lib["track_count"])
+	}
+}
+
+func TestHandleLibraries_IndexedCounts(t *testing.T) {
+	srv, database, _ := newTestServer(t)
+	libID := srv.cfg.Libraries[0].ID
+
+	dirID, err := database.UpsertDirectoryWithAudioFlag(libID, "album", "FLAC", false, "", true)
+	if err != nil {
+		t.Fatalf("UpsertDirectoryWithAudioFlag: %v", err)
+	}
+	for _, name := range []string{"a.flac", "b.flac"} {
+		if err := database.UpsertTrack(db.Track{DirectoryID: dirID, Filename: name}); err != nil {
+			t.Fatalf("UpsertTrack %s: %v", name, err)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/libraries", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	var resp map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	libs := resp["libraries"].([]any)
+	lib := libs[0].(map[string]any)
+	if lib["indexed"] != true {
+		t.Errorf("want indexed true, got %v", lib["indexed"])
+	}
+	if lib["track_count"] != float64(2) {
+		t.Errorf("want track_count 2, got %v", lib["track_count"])
+	}
 }
 
 // --- GET /api/tree/{libraryID} ---

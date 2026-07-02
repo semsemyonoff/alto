@@ -16,10 +16,31 @@
       <span class="mark"><img src="/static/logo.svg" alt="ALTO logo"></span>
       <span class="wordmark"><b>ALTO</b><small>Audio Library Transcode Organizer</small></span>
     </a>
+    {{if .Libraries}}
+    <div class="libwrap"
+         x-data="altoLibMenu()"
+         data-selected-id="{{.SelectedID}}"
+         data-selected-name="{{.SelectedName}}"
+         @click.outside="open = false">
+      <button type="button" class="libsel" @click="open = !open" aria-haspopup="listbox" :aria-expanded="open.toString()">
+        <span class="lbl">Library</span>
+        <span class="val" x-text="selectedName">{{.SelectedName}}</span>
+        <span class="knob">&#9662;</span>
+      </button>
+      <div class="libmenu" :class="{ open: open }" role="listbox">
+        <template x-for="lib in libraries" :key="lib.id">
+          <div class="item" :class="{ sel: lib.id === selectedId }" role="option" :aria-selected="(lib.id === selectedId).toString()" @click="select(lib)">
+            <span x-text="lib.name"></span>
+            <span class="st" x-text="lib.indexed ? lib.track_count + ' tracks' : 'not indexed'"></span>
+          </div>
+        </template>
+      </div>
+    </div>
+    {{end}}
     <div class="topright">
-      <span id="scan-indicator" class="status" style="display:none">
-        <span id="statusdot" class="dot off" aria-hidden="true"></span>
-        <span id="scan-text">Scanning…</span>
+      <span id="scan-indicator" class="status">
+        <span id="statusdot" class="dot{{if not .SelectedIndexed}} off{{end}}" aria-hidden="true"></span>
+        <span id="scan-text">{{if .SelectedIndexed}}indexed &middot; {{.SelectedTrackCount}} tracks{{else}}not indexed{{end}}</span>
       </span>
       <button class="btn-reindex"
               id="scan-btn"
@@ -113,7 +134,6 @@
   function showScanStatus(message, state, autoHideMs) {
     if (!scanIndic) return;
     if (_scanMsgTimer) { clearTimeout(_scanMsgTimer); _scanMsgTimer = null; }
-    scanIndic.style.display = '';
     if (statusDot) {
       statusDot.classList.remove('off', 'running', 'success', 'error');
       statusDot.classList.add(state || 'off');
@@ -121,21 +141,20 @@
     if (scanText) scanText.textContent = message || 'Scanning…';
     if (autoHideMs) {
       _scanMsgTimer = setTimeout(function() {
-        if (scanIndic) scanIndic.style.display = 'none';
+        // Restore the persistent library-indexed status once the transient
+        // scan message (success/error) has had time to be read.
+        if (window.altoLibraryMenu) window.altoLibraryMenu.refreshStatus();
       }, autoHideMs);
     }
   }
 
   function hideScanIndic() {
     if (_scanMsgTimer) { clearTimeout(_scanMsgTimer); _scanMsgTimer = null; }
-    if (scanIndic) scanIndic.style.display = 'none';
+    if (window.altoLibraryMenu) window.altoLibraryMenu.refreshStatus();
   }
 
   function refreshTree() {
-    var sel = document.getElementById('library-select');
-    if (sel && typeof htmx !== 'undefined') {
-      htmx.ajax('GET', '/api/tree/' + sel.value + '/children', {target: '#tree-root', swap: 'innerHTML'});
-    }
+    if (window.altoLibraryMenu) window.altoLibraryMenu.reloadTree();
   }
 
   function startScanSSE() {
