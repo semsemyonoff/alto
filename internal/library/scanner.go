@@ -64,8 +64,10 @@ func NewScanner(database *db.DB, prober Prober, cfg ScanConfig) *Scanner {
 	return &Scanner{db: database, prober: prober, cfg: cfg}
 }
 
-// ScanAll scans all provided libraries in parallel.
-func (s *Scanner) ScanAll(ctx context.Context, libraries []db.Library) error {
+// ScanAll scans all provided libraries in parallel. If progress is non-nil, it is
+// invoked from each library's goroutine as audio directories are discovered,
+// with the running count of directories discovered so far in that library.
+func (s *Scanner) ScanAll(ctx context.Context, libraries []db.Library, progress func(libraryID int64, discoveredDirs int)) error {
 	var wg sync.WaitGroup
 	errs := make([]error, len(libraries))
 
@@ -73,7 +75,11 @@ func (s *Scanner) ScanAll(ctx context.Context, libraries []db.Library) error {
 		wg.Add(1)
 		go func(idx int, l db.Library) {
 			defer wg.Done()
-			if err := s.Scan(ctx, l); err != nil {
+			var libProgress func(int)
+			if progress != nil {
+				libProgress = func(discoveredDirs int) { progress(l.ID, discoveredDirs) }
+			}
+			if err := s.scan(ctx, l, libProgress); err != nil {
 				errs[idx] = fmt.Errorf("library %q: %w", l.Name, err)
 			}
 		}(i, lib)
@@ -86,6 +92,12 @@ func (s *Scanner) ScanAll(ctx context.Context, libraries []db.Library) error {
 
 // Scan walks a single library directory, extracts metadata, and syncs the DB.
 func (s *Scanner) Scan(ctx context.Context, lib db.Library) error {
+	return s.scan(ctx, lib, nil)
+}
+
+// scan is the shared implementation behind Scan and ScanAll. If progress is
+// non-nil, it is called with the running count of discovered audio directories.
+func (s *Scanner) scan(ctx context.Context, lib db.Library, progress func(discoveredDirs int)) error {
 	slog.Info("scan started", "library", lib.Name, "path", lib.Path)
 
 	resolvedOut, _ := filepath.EvalSymlinks(s.cfg.OutputDir)
@@ -160,6 +172,10 @@ func (s *Scanner) Scan(ctx context.Context, lib db.Library) error {
 		audioPaths = append(audioPaths, rel)
 		dirToFiles[rel] = audioFiles
 		dirInfos[rel] = &dirScanResult{absPath: path, entries: entries}
+
+		if progress != nil {
+			progress(len(audioPaths))
+		}
 
 		return nil
 	})

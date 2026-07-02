@@ -23,17 +23,20 @@ type mockScanner struct {
 	err error
 }
 
-type scannerFunc func(context.Context, []db.Library) error
+type scannerFunc func(context.Context, []db.Library, func(libraryID int64, discoveredDirs int)) error
 
-func (m *mockScanner) ScanAll(_ context.Context, _ []db.Library) error {
+func (m *mockScanner) ScanAll(_ context.Context, _ []db.Library, progress func(libraryID int64, discoveredDirs int)) error {
 	if m.block != nil {
 		<-m.block
+	}
+	if progress != nil {
+		progress(0, 0)
 	}
 	return m.err
 }
 
-func (f scannerFunc) ScanAll(ctx context.Context, libraries []db.Library) error {
-	return f(ctx, libraries)
+func (f scannerFunc) ScanAll(ctx context.Context, libraries []db.Library, progress func(libraryID int64, discoveredDirs int)) error {
+	return f(ctx, libraries, progress)
 }
 
 // newTestServer creates a Server backed by an in-memory SQLite DB and a mock scanner.
@@ -607,6 +610,62 @@ func TestHandleScanStatus_ReceivesEvents(t *testing.T) {
 	}
 }
 
+func TestHandleScanStatus_EmitsProgress(t *testing.T) {
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	defer func() { _ = database.Close() }()
+
+	libDir := t.TempDir()
+	libID, _ := database.UpsertLibrary("Lib", libDir)
+
+	block := make(chan struct{})
+	scanner := scannerFunc(func(_ context.Context, libs []db.Library, progress func(libraryID int64, discoveredDirs int)) error {
+		<-block
+		progress(libs[0].ID, 1)
+		progress(libs[0].ID, 2)
+		return nil
+	})
+
+	cfg := Config{Libraries: []LibraryConfig{{ID: libID, Name: "Lib", Path: libDir}}}
+	srv := New(database, scanner, cfg)
+
+	go func() {
+		req := httptest.NewRequest(http.MethodPost, "/api/scan", nil)
+		srv.ServeHTTP(httptest.NewRecorder(), req)
+	}()
+	time.Sleep(20 * time.Millisecond)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/scan/status", nil).WithContext(ctx)
+	w := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		srv.ServeHTTP(w, req)
+		close(done)
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+	close(block)
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("SSE handler did not finish in time")
+	}
+
+	body := w.Body.String()
+	if !strings.Contains(body, "event: progress") {
+		t.Fatalf("expected a progress SSE event, got: %s", body)
+	}
+	if !strings.Contains(body, `"discovered":2`) {
+		t.Errorf("expected discovered count 2 in progress event, got: %s", body)
+	}
+}
+
 func TestHandleScanStatus_CompleteIncludesSummary(t *testing.T) {
 	database, err := db.Open(":memory:")
 	if err != nil {
@@ -624,7 +683,7 @@ func TestHandleScanStatus_CompleteIncludesSummary(t *testing.T) {
 	}
 
 	block := make(chan struct{})
-	scanner := scannerFunc(func(_ context.Context, _ []db.Library) error {
+	scanner := scannerFunc(func(_ context.Context, _ []db.Library, _ func(libraryID int64, discoveredDirs int)) error {
 		<-block
 		if _, err := database.UpsertDirectory(libID, "New Album", "FLAC", false, ""); err != nil {
 			return err

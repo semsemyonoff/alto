@@ -157,18 +157,57 @@
     if (window.altoLibraryMenu) window.altoLibraryMenu.reloadTree();
   }
 
+  // Drives the standby screen's gauge/scanbar/live-count while a scan runs
+  // (indeterminate — the bar fills toward, but never quite reaches, 100% since
+  // the total directory count isn't known up front) and reloads the page once
+  // a scan that started from standby finishes, so the newly indexed tree renders.
+  var standby = document.getElementById('standby');
+  var scanFill = document.getElementById('scanfill');
+  var scanCount = document.getElementById('scan-discovered-count');
+  var reindexBtn = document.getElementById('scan-btn');
+
+  function updateStandbyProgress(discovered) {
+    if (!standby) return;
+    standby.classList.add('scanning');
+    if (scanFill) scanFill.style.width = Math.min(96, discovered * 4) + '%';
+    if (scanCount) scanCount.textContent = discovered > 0 ? discovered + ' directories found' : '';
+  }
+
+  function finishStandby() {
+    if (!standby) return;
+    standby.classList.remove('scanning');
+    if (scanFill) scanFill.style.width = '0%';
+    if (scanCount) scanCount.textContent = '';
+  }
+
   function startScanSSE() {
     if (_scanES) { _scanES.close(); }
     showScanStatus('Scanning…', 'running');
+    if (reindexBtn) reindexBtn.classList.add('spin');
+    if (standby) standby.classList.add('scanning');
     _scanES = new EventSource('/api/scan/status');
+    _scanES.addEventListener('progress', function(event) {
+      var payload = {};
+      try { payload = JSON.parse(event.data || '{}'); } catch (_) {}
+      updateStandbyProgress(payload.discovered || 0);
+    });
     _scanES.addEventListener('idle', function() {
       _scanES.close(); _scanES = null; hideScanIndic(); refreshTree();
+      if (reindexBtn) reindexBtn.classList.remove('spin');
+      finishStandby();
     });
     _scanES.addEventListener('complete', function(event) {
       var payload = {};
       try { payload = JSON.parse(event.data || '{}'); } catch (_) {}
       _scanES.close(); _scanES = null;
       showScanStatus(payload.message || 'Re-index complete.', 'success', 6000);
+      if (reindexBtn) reindexBtn.classList.remove('spin');
+      if (standby) {
+        // The library just went from un-indexed to indexed (or vice versa);
+        // reload so the server re-renders the standby/tree content correctly.
+        window.location.reload();
+        return;
+      }
       refreshTree();
     });
     _scanES.addEventListener('error', function(event) {
@@ -176,10 +215,14 @@
       try { payload = JSON.parse(event.data || '{}'); } catch (_) {}
       _scanES.close(); _scanES = null;
       showScanStatus(payload.message || 'Re-index failed.', 'error', 8000);
+      if (reindexBtn) reindexBtn.classList.remove('spin');
+      finishStandby();
     });
     _scanES.onerror = function() {
       if (_scanES) { _scanES.close(); _scanES = null; }
       showScanStatus('Re-index status connection lost.', 'error', 8000);
+      if (reindexBtn) reindexBtn.classList.remove('spin');
+      finishStandby();
     };
   }
 

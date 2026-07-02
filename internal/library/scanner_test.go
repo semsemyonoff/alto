@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/semsemyonoff/ALTO/internal/db"
@@ -594,7 +595,7 @@ func TestScanAllParallel(t *testing.T) {
 		{ID: id2, Name: "lib2", Path: root2},
 	}
 
-	if err := s.ScanAll(context.Background(), libs); err != nil {
+	if err := s.ScanAll(context.Background(), libs, nil); err != nil {
 		t.Fatalf("ScanAll: %v", err)
 	}
 
@@ -606,6 +607,58 @@ func TestScanAllParallel(t *testing.T) {
 	}
 	if len(dirs2) != 1 {
 		t.Errorf("lib2: expected 1 dir, got %d", len(dirs2))
+	}
+}
+
+// TestScanAllProgress verifies that ScanAll reports increasing, race-free
+// discovered-directory counts per library while scanning concurrently.
+func TestScanAllProgress(t *testing.T) {
+	root1 := makeTestTree(t, map[string][]string{"AlbumA": {"a.flac"}, "AlbumB": {"b.flac"}})
+	root2 := makeTestTree(t, map[string][]string{"AlbumC": {"c.flac"}})
+
+	database := openTestDB(t)
+	id1, _ := database.UpsertLibrary("lib1", root1)
+	id2, _ := database.UpsertLibrary("lib2", root2)
+
+	s := NewScanner(database, &mockProber{}, ScanConfig{CacheDir: t.TempDir()})
+	libs := []db.Library{
+		{ID: id1, Name: "lib1", Path: root1},
+		{ID: id2, Name: "lib2", Path: root2},
+	}
+
+	var mu sync.Mutex
+	calls := make(map[int64][]int)
+	progress := func(libraryID int64, discoveredDirs int) {
+		mu.Lock()
+		defer mu.Unlock()
+		calls[libraryID] = append(calls[libraryID], discoveredDirs)
+	}
+
+	if err := s.ScanAll(context.Background(), libs, progress); err != nil {
+		t.Fatalf("ScanAll: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	for _, libID := range []int64{id1, id2} {
+		seq := calls[libID]
+		if len(seq) == 0 {
+			t.Fatalf("library %d: expected at least one progress call, got none", libID)
+		}
+		for i := 1; i < len(seq); i++ {
+			if seq[i] <= seq[i-1] {
+				t.Errorf("library %d: expected strictly increasing counts, got %v", libID, seq)
+				break
+			}
+		}
+	}
+
+	if got := len(calls[id1]); got != 2 {
+		t.Errorf("lib1: expected 2 progress calls (2 audio dirs), got %d: %v", got, calls[id1])
+	}
+	if got := len(calls[id2]); got != 1 {
+		t.Errorf("lib2: expected 1 progress call (1 audio dir), got %d: %v", got, calls[id2])
 	}
 }
 

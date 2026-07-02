@@ -14,8 +14,10 @@ import (
 )
 
 // LibraryScanner is the interface for scanning libraries into the database.
+// If progress is non-nil, implementations invoke it as audio directories are
+// discovered, reporting the running per-library discovered-directory count.
 type LibraryScanner interface {
-	ScanAll(ctx context.Context, libraries []db.Library) error
+	ScanAll(ctx context.Context, libraries []db.Library, progress func(libraryID int64, discoveredDirs int)) error
 }
 
 // TranscodeEngine is the interface for running transcoding jobs.
@@ -42,10 +44,11 @@ type Config struct {
 
 // ScanEvent represents a scan lifecycle event broadcast over SSE.
 type ScanEvent struct {
-	Type    string `json:"type"`              // "started", "complete", "error", "idle"
-	Message string `json:"message,omitempty"` // error message if Type == "error"
-	Added   int    `json:"added,omitempty"`
-	Removed int    `json:"removed,omitempty"`
+	Type       string `json:"type"`                 // "started", "progress", "complete", "error", "idle"
+	Message    string `json:"message,omitempty"`     // error message if Type == "error"
+	Added      int    `json:"added,omitempty"`
+	Removed    int    `json:"removed,omitempty"`
+	Discovered int    `json:"discovered,omitempty"` // running total of directories discovered so far, Type == "progress"
 }
 
 // scanState manages scan lifecycle and SSE subscriptions under a single mutex.
@@ -211,7 +214,21 @@ func (s *Server) launchScan(libs []db.Library) {
 		}
 
 		s.scan.broadcast(ScanEvent{Type: "started"})
-		if err := s.scanner.ScanAll(s.shutdownCtx, libs); err != nil {
+
+		var progressMu sync.Mutex
+		discoveredByLib := make(map[int64]int, len(libs))
+		progress := func(libraryID int64, discoveredDirs int) {
+			progressMu.Lock()
+			discoveredByLib[libraryID] = discoveredDirs
+			total := 0
+			for _, n := range discoveredByLib {
+				total += n
+			}
+			progressMu.Unlock()
+			s.scan.broadcast(ScanEvent{Type: "progress", Discovered: total})
+		}
+
+		if err := s.scanner.ScanAll(s.shutdownCtx, libs, progress); err != nil {
 			slog.Error("scan failed", "err", err)
 			s.scan.broadcast(ScanEvent{Type: "error", Message: err.Error()})
 		} else {

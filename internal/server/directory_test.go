@@ -427,7 +427,16 @@ func TestHandleDirPage_RealTemplates_NoCollisionWithIndex(t *testing.T) {
 
 	absPath := filepath.Join(libDir, "Jazz")
 	mkdirAll(t, absPath)
-	database.UpsertDirectory(libID, "Jazz", "FLAC", false, "") //nolint:errcheck
+	dirID, err := database.UpsertDirectory(libID, "Jazz", "FLAC", false, "")
+	if err != nil {
+		t.Fatalf("UpsertDirectory: %v", err)
+	}
+	// Give the library indexed content so "/" renders its normal placeholder
+	// rather than the standby (not-indexed) state — this test is about
+	// template-group isolation, not the standby screen.
+	if err := database.UpsertTrack(db.Track{DirectoryID: dirID, Filename: "01.flac", Codec: "flac"}); err != nil {
+		t.Fatalf("UpsertTrack: %v", err)
+	}
 
 	// Render "/" first to warm the index.html template group cache.
 	req := httptest.NewRequest(http.MethodGet, "/", nil)

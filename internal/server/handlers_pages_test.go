@@ -223,6 +223,64 @@ func TestSidebar_RealTemplates_RendersTreeSearchInput(t *testing.T) {
 	}
 }
 
+// TestHandleIndex_RendersStandbyWhenNotIndexed verifies that the index page
+// shows the standby state (gauge + "Re-index to scan" CTA) instead of the
+// directory placeholder when the selected library has no indexed content.
+func TestHandleIndex_RendersStandbyWhenNotIndexed(t *testing.T) {
+	srv, _, _ := newTestServerWithRealTemplates(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `id="standby"`) {
+		t.Errorf("un-indexed library should render the standby state; got:\n%s", body)
+	}
+	if !strings.Contains(body, "Re-index to scan") {
+		t.Errorf("standby state should include a re-index CTA; got:\n%s", body)
+	}
+	if strings.Contains(body, "content-placeholder") {
+		t.Errorf("un-indexed library should not render the directory placeholder; got:\n%s", body)
+	}
+}
+
+// TestHandleIndex_RendersPlaceholderWhenIndexed verifies that once a library
+// has indexed content, the index page falls back to the normal "select a
+// directory" placeholder rather than the standby state.
+func TestHandleIndex_RendersPlaceholderWhenIndexed(t *testing.T) {
+	srv, database, libDir := newTestServerWithRealTemplates(t)
+	libID := srv.cfg.Libraries[0].ID
+
+	absPath := filepath.Join(libDir, "Jazz")
+	mkdirAll(t, absPath)
+	dirID, err := database.UpsertDirectory(libID, "Jazz", "FLAC", false, "")
+	if err != nil {
+		t.Fatalf("UpsertDirectory: %v", err)
+	}
+	if err := database.UpsertTrack(db.Track{DirectoryID: dirID, Filename: "01.flac", Codec: "flac"}); err != nil {
+		t.Fatalf("UpsertTrack: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "content-placeholder") {
+		t.Errorf("indexed library should render the directory placeholder; got:\n%s", body)
+	}
+	if strings.Contains(body, `id="standby"`) {
+		t.Errorf("indexed library should not render the standby state; got:\n%s", body)
+	}
+}
+
 // TestRealTemplates_IndexRendersHashedViteTagsWithBuiltDist verifies that,
 // against the project's actual built web/static/dist manifest, base.html
 // renders real hashed asset tags.

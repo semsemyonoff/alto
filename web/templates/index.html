@@ -1,8 +1,21 @@
 {{define "content"}}
+{{if .SelectedIndexed}}
 <div class="content-placeholder">
   <div class="content-placeholder-icon">♪</div>
   <div class="content-placeholder-text">Select a directory from the tree to view its contents.</div>
 </div>
+{{else}}
+<div class="standby" id="standby">
+  <div class="gauge"><div class="ring"></div><div class="led"></div></div>
+  <h2 id="standby-title">Library in standby</h2>
+  <p id="standby-text">This library has not been indexed yet. Run a scan to read directories and audio metadata.</p>
+  <div class="scanbar"><i id="scanfill"></i></div>
+  <div class="scancount" id="scan-discovered-count"></div>
+  <button type="button" class="btn-cta" id="standby-reindex" onclick="altoTriggerScan({{.SelectedID}})">
+    <span class="ic">↻</span> Re-index to scan
+  </button>
+</div>
+{{end}}
 {{end}}
 
 {{define "index.html"}}{{template "base" .}}{{end}}

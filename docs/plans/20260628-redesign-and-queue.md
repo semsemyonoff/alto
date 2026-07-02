@@ -310,11 +310,11 @@ The redesign comes from the approved Claude Design prototype; a decoded local co
 - Create: `web/frontend/src/styles/standby.css`
 - Modify: scan-related server test
 
-- [ ] extend `ScanAll` with a plain `progress func(libraryID int64, discoveredDirs int)` param (no shared named type → no import cycle); `internal/library` calls it per library; aggregate concurrent libraries under a mutex in the server; emit a scan SSE `progress` event; bar indeterminate; update all scanner test doubles
-- [ ] render the standby/empty state (gauge + "Re-index to scan") when the selected library has no indexed directories
-- [ ] wire the scan animation (indeterminate bar + live count) to the scan SSE
-- [ ] write tests: scanner reports increasing counts (race-free under parallel scan); SSE emits `progress`; standby renders for an un-indexed library
-- [ ] run tests + `npm run build` — must pass before next task
+- [x] extend `ScanAll` with a plain `progress func(libraryID int64, discoveredDirs int)` param (no shared named type → no import cycle); `internal/library` calls it per library; aggregate concurrent libraries under a mutex in the server; emit a scan SSE `progress` event; bar indeterminate; update all scanner test doubles
+- [x] render the standby/empty state (gauge + "Re-index to scan") when the selected library has no indexed directories
+- [x] wire the scan animation (indeterminate bar + live count) to the scan SSE
+- [x] write tests: scanner reports increasing counts (race-free under parallel scan); SSE emits `progress`; standby renders for an un-indexed library
+- [x] run tests + `npm run build` — must pass before next task
 
 ### Task 21 (optional): Server-side tree search
 
