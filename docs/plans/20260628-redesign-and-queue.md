@@ -151,10 +151,10 @@ The redesign comes from the approved Claude Design prototype; a decoded local co
 **Files:**
 - Modify: `internal/server/handlers_transcode.go`, `internal/server/server.go`, `internal/server/handlers_transcode_test.go`
 
-- [ ] add `handleJobCancel` mapping `cancel()` results to 202 / 404 / 409
-- [ ] register `POST /api/jobs/{id}/cancel`
-- [ ] write tests for each response path
-- [ ] run tests — must pass before next task
+- [x] add `handleJobCancel` mapping `cancel()` results to 202 / 404 / 409
+- [x] register `POST /api/jobs/{id}/cancel`
+- [x] write tests for each response path
+- [x] run tests — must pass before next task
 
 ### Task 8: Wire `ALTO_TRANSCODE_WORKERS` config
 

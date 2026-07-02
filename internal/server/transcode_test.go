@@ -681,6 +681,106 @@ func TestHandleJobEvents_DisconnectUnsubscribes(t *testing.T) {
 	}
 }
 
+// --- POST /api/jobs/{id}/cancel ---
+
+func TestHandleJobCancel_Queued(t *testing.T) {
+	block := make(chan struct{})
+	eng := &blockingEngine{block: block}
+	jm := newJobManager(eng, 1, context.Background())
+	t.Cleanup(jm.Shutdown)
+	srv := &Server{jobs: jm}
+
+	if _, started := jm.start("job1", "/dir1", transcode.Job{ID: "job1"}, "t1", "s1"); !started {
+		t.Fatalf("start job1: expected success")
+	}
+	if _, started := jm.start("job2", "/dir2", transcode.Job{ID: "job2"}, "t2", "s2"); !started {
+		t.Fatalf("start job2: expected success")
+	}
+	waitForJobStatus(t, jm, "job1", JobStatusRunning, 2*time.Second)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/jobs/job2/cancel", nil)
+	req.SetPathValue("id", "job2")
+	w := httptest.NewRecorder()
+	srv.handleJobCancel(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", w.Code, w.Body.String())
+	}
+	if got := jobStatusFor(jm, "job2"); got != JobStatusCanceled {
+		t.Fatalf("job2 status = %q, want canceled", got)
+	}
+
+	close(block)
+}
+
+func TestHandleJobCancel_Running(t *testing.T) {
+	jm := newJobManager(&ctxEngine{}, 1, context.Background())
+	t.Cleanup(jm.Shutdown)
+	srv := &Server{jobs: jm}
+
+	if _, started := jm.start("job1", "/dir1", transcode.Job{ID: "job1"}, "t1", "s1"); !started {
+		t.Fatalf("start: expected success")
+	}
+	waitForJobStatus(t, jm, "job1", JobStatusRunning, 2*time.Second)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/jobs/job1/cancel", nil)
+	req.SetPathValue("id", "job1")
+	w := httptest.NewRecorder()
+	srv.handleJobCancel(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", w.Code, w.Body.String())
+	}
+	waitForJobStatus(t, jm, "job1", JobStatusCanceled, 2*time.Second)
+}
+
+func TestHandleJobCancel_NotFound(t *testing.T) {
+	jm := newJobManager(nil, 0, context.Background())
+	srv := &Server{jobs: jm}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/jobs/nope/cancel", nil)
+	req.SetPathValue("id", "nope")
+	w := httptest.NewRecorder()
+	srv.handleJobCancel(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", w.Code)
+	}
+}
+
+func TestHandleJobCancel_AlreadyFinished(t *testing.T) {
+	jm := newJobManager(nil, 0, context.Background())
+	srv := &Server{jobs: jm}
+
+	js, started := jm.start("job1", "/dir1", transcode.Job{ID: "job1"}, "t1", "s1")
+	if !started {
+		t.Fatalf("start: expected success")
+	}
+	jm.complete(js.id, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/jobs/job1/cancel", nil)
+	req.SetPathValue("id", "job1")
+	w := httptest.NewRecorder()
+	srv.handleJobCancel(w, req)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d", w.Code)
+	}
+}
+
+func TestHandleJobCancel_MissingID(t *testing.T) {
+	jm := newJobManager(nil, 0, context.Background())
+	srv := &Server{jobs: jm}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/jobs//cancel", nil)
+	w := httptest.NewRecorder()
+	srv.handleJobCancel(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+}
+
 // --- SSE event format ---
 
 func TestSSEEventFormat(t *testing.T) {

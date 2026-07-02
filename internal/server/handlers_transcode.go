@@ -217,6 +217,25 @@ func writeJobEvent(w http.ResponseWriter, ev jobEvent) {
 	_, _ = fmt.Fprintf(w, "event: update\ndata: %s\n\n", data)
 }
 
+// handleJobCancel cancels a queued or running job.
+// POST /api/jobs/{id}/cancel
+func (s *Server) handleJobCancel(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		http.Error(w, "job ID required", http.StatusBadRequest)
+		return
+	}
+
+	switch s.jobs.cancel(id) {
+	case cancelResultCanceled:
+		writeJSON(w, http.StatusAccepted, map[string]string{"status": "canceled"})
+	case cancelResultNotFound:
+		http.Error(w, "job not found", http.StatusNotFound)
+	case cancelResultFinished:
+		http.Error(w, "job already finished", http.StatusConflict)
+	}
+}
+
 // handleTranscodeProgress streams real-time progress for a job via SSE.
 // GET /api/transcode/{jobID}/progress
 func (s *Server) handleTranscodeProgress(w http.ResponseWriter, r *http.Request) {
