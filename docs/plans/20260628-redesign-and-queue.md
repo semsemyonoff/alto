@@ -235,10 +235,10 @@ The redesign comes from the approved Claude Design prototype; a decoded local co
 - Create: `web/frontend/src/styles/shell.css`
 - Delete: `web/static/js/htmx.min.js` (now bundled via npm)
 
-- [ ] rebuild `base.html` shell (`.shell` grid, `.topbar`, status dot, Re-index, `.seam`) with prototype markup/classes; HTMX now loaded via the Vite bundle, so remove the vendored `htmx.min.js` reference + file
-- [ ] move shell styles to `shell.css`; keep scan-status SSE working against new ids
-- [ ] write a Go template-render test asserting shell ids/blocks
-- [ ] run tests + `npm run build` — must pass before next task
+- [x] rebuild `base.html` shell (`.shell` grid, `.topbar`, status dot, Re-index, `.seam`) with prototype markup/classes; HTMX now loaded via the Vite bundle, so remove the vendored `htmx.min.js` reference + file
+- [x] move shell styles to `shell.css`; keep scan-status SSE working against new ids
+- [x] write a Go template-render test asserting shell ids/blocks
+- [x] run tests + `npm run build` — must pass before next task
 
 ### Task 15: Rebuild tree sidebar (+ resizer in TS)
 

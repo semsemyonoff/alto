@@ -84,6 +84,44 @@ func TestScanUI_ScanSSEJSPresent(t *testing.T) {
 	}
 }
 
+// --- App shell: topbar / seam / status dot ---
+
+// TestAppShell_RendersTopbarAndSeam verifies the rebuilt shell markup is present:
+// the `.shell` grid wrapper, `.topbar` header with brand + status dot + Re-index
+// button, and the `.seam` divider, and that the vendored htmx.min.js script tag
+// is gone now that HTMX ships via the Vite bundle.
+func TestAppShell_RendersTopbarAndSeam(t *testing.T) {
+	srv, _, _ := newTestServerWithRealTemplates(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+
+	if !strings.Contains(body, `class="shell"`) {
+		t.Error("index page should render the .shell grid wrapper")
+	}
+	if !strings.Contains(body, `class="topbar"`) {
+		t.Error("index page should render the .topbar header")
+	}
+	if !strings.Contains(body, `class="seam"`) {
+		t.Error("index page should render the .seam divider between topbar and body")
+	}
+	if !strings.Contains(body, `id="statusdot"`) {
+		t.Error("index page should render the topbar status dot")
+	}
+	if !strings.Contains(body, `id="scan-btn"`) {
+		t.Error("index page should render the Re-index button in the topbar")
+	}
+	if strings.Contains(body, "htmx.min.js") {
+		t.Error("index page should no longer reference the vendored htmx.min.js; HTMX ships via the Vite bundle")
+	}
+}
+
 // --- Directory page: library-id data attribute ---
 
 // TestScanUI_DirectoryPageHasLibraryID verifies the directory page embeds the

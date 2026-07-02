@@ -6,7 +6,7 @@
   var KEYBOARD_STEP = 16;
 
   function initSidebarResize() {
-    var shell = document.querySelector(".app-shell");
+    var shell = document.querySelector(".shell");
     var handle = document.querySelector(".app-sidebar-resizer");
     if (!shell || !handle) {
       return;

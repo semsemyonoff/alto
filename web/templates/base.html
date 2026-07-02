@@ -7,29 +7,31 @@
   <link rel="icon" href="/static/logo.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/static/css/style.css">
   {{ viteTags "src/main.ts" }}
-  <script src="/static/js/htmx.min.js" defer></script>
   <script src="/static/js/layout.js" defer></script>
 </head>
 <body>
-<div class="app-shell">
+<div class="shell">
 
-  <header class="app-header">
-    <a class="app-brand" href="/" aria-label="Audio Library Transcode Organizer home">
-      <img class="app-logo" src="/static/logo.svg" alt="ALTO logo">
-      <span class="app-title">Audio Library Transcode Organizer</span>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="Audio Library Transcode Organizer home">
+      <span class="mark"><img src="/static/logo.svg" alt="ALTO logo"></span>
+      <span class="wordmark"><b>ALTO</b><small>Audio Library Transcode Organizer</small></span>
     </a>
-    <span class="header-spacer"></span>
-    <span id="scan-indicator" class="scan-status" style="display:none">
-      <span id="scan-spinner" class="spinner" aria-hidden="true"></span>
-      <span id="scan-text">Scanning…</span>
-    </span>
-    <button class="btn btn-ghost"
-            id="scan-btn"
-            onclick="altoTriggerScan()"
-            title="Re-index all libraries">
-      ↻ Re-index
-    </button>
+    <div class="topright">
+      <span id="scan-indicator" class="status" style="display:none">
+        <span id="statusdot" class="dot off" aria-hidden="true"></span>
+        <span id="scan-text">Scanning…</span>
+      </span>
+      <button class="btn-reindex"
+              id="scan-btn"
+              onclick="altoTriggerScan()"
+              title="Re-index all libraries">
+        <span class="ic">↻</span> Re-index
+      </button>
+    </div>
   </header>
+
+  <div class="seam"></div>
 
   <aside class="app-sidebar" id="app-sidebar">
     {{template "sidebar" .}}
@@ -53,7 +55,7 @@
 
 <script>(function(){
   var scanIndic = document.getElementById('scan-indicator');
-  var scanSpinner = document.getElementById('scan-spinner');
+  var statusDot = document.getElementById('statusdot');
   var scanText = document.getElementById('scan-text');
   var _scanES = null;
   var _scanMsgTimer = null;
@@ -62,9 +64,10 @@
     if (!scanIndic) return;
     if (_scanMsgTimer) { clearTimeout(_scanMsgTimer); _scanMsgTimer = null; }
     scanIndic.style.display = '';
-    scanIndic.classList.remove('running', 'success', 'error');
-    if (state) scanIndic.classList.add(state);
-    if (scanSpinner) scanSpinner.style.display = state === 'running' ? '' : 'none';
+    if (statusDot) {
+      statusDot.classList.remove('off', 'running', 'success', 'error');
+      statusDot.classList.add(state || 'off');
+    }
     if (scanText) scanText.textContent = message || 'Scanning…';
     if (autoHideMs) {
       _scanMsgTimer = setTimeout(function() {

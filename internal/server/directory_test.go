@@ -361,8 +361,8 @@ func TestHandleDirPage_RealTemplates_RendersUnifiedShell(t *testing.T) {
 	if got := strings.Count(body, `id="dir-content"`); got != 1 {
 		t.Errorf("want exactly one #dir-content; got %d", got)
 	}
-	if !strings.Contains(body, `class="app-header"`) {
-		t.Error("directory page should render the shared app-header/topbar from base.html")
+	if !strings.Contains(body, `class="topbar"`) {
+		t.Error("directory page should render the shared topbar from base.html")
 	}
 	if !strings.Contains(body, "scan-btn") {
 		t.Error("directory page should render the shared Re-index control from base.html")
