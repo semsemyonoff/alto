@@ -331,6 +331,141 @@ func TestHandleDirPage_MixedCodecs(t *testing.T) {
 	}
 }
 
+// --- Task 13: directory.html unified onto the base.html shell ---
+
+// TestHandleDirPage_RealTemplates_RendersUnifiedShell verifies that /dir,
+// rendered against the project's real templates, produces a single full page
+// (base's head/topbar/sidebar) rather than directory.html's old standalone
+// <html><head><body> document, and that the shared sidebar partial and
+// #dir-content both appear exactly once.
+func TestHandleDirPage_RealTemplates_RendersUnifiedShell(t *testing.T) {
+	srv, database, libDir := newTestServerWithRealTemplates(t)
+	libID := srv.cfg.Libraries[0].ID
+
+	absPath := filepath.Join(libDir, "Jazz")
+	mkdirAll(t, absPath)
+	database.UpsertDirectory(libID, "Jazz", "FLAC", false, "") //nolint:errcheck
+
+	req := httptest.NewRequest(http.MethodGet, apiURL("/dir", map[string]string{"path": absPath}), nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+
+	if got := strings.Count(body, "<!DOCTYPE html>"); got != 1 {
+		t.Errorf("want exactly one <!DOCTYPE html> (unified shell, not a nested standalone document); got %d in:\n%s", got, body)
+	}
+	if got := strings.Count(body, `id="dir-content"`); got != 1 {
+		t.Errorf("want exactly one #dir-content; got %d", got)
+	}
+	if !strings.Contains(body, `class="app-header"`) {
+		t.Error("directory page should render the shared app-header/topbar from base.html")
+	}
+	if !strings.Contains(body, "scan-btn") {
+		t.Error("directory page should render the shared Re-index control from base.html")
+	}
+	if !strings.Contains(body, `id="library-select"`) || !strings.Contains(body, `id="tree-root"`) {
+		t.Error("directory page should render the shared sidebar partial (library selector + tree)")
+	}
+}
+
+// TestHandleDirPage_RealTemplates_HTMXSelectRegionIntact verifies that the
+// HTMX contract used by tree-node clicks (hx-select="#dir-content") still
+// resolves against the full /dir response: the selected fragment must
+// contain the directory's tracks and title without any of the surrounding
+// shell markup being required.
+func TestHandleDirPage_RealTemplates_HTMXSelectRegionIntact(t *testing.T) {
+	srv, database, libDir := newTestServerWithRealTemplates(t)
+	libID := srv.cfg.Libraries[0].ID
+
+	absPath := filepath.Join(libDir, "Jazz")
+	mkdirAll(t, absPath)
+	dirID, err := database.UpsertDirectory(libID, "Jazz", "FLAC", false, "")
+	if err != nil {
+		t.Fatalf("UpsertDirectory: %v", err)
+	}
+	if err := database.UpsertTrack(db.Track{
+		DirectoryID: dirID, Filename: "01_so_what.flac", Codec: "flac",
+		Bitrate: 900_000, Duration: 565.0, SampleRate: 44100, Channels: 2, Size: 63_504_000,
+	}); err != nil {
+		t.Fatalf("UpsertTrack: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, apiURL("/dir", map[string]string{"path": absPath}), nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+
+	start := strings.Index(body, `id="dir-content"`)
+	mainEnd := strings.Index(body, "</main>")
+	if start == -1 || mainEnd == -1 || mainEnd < start {
+		t.Fatalf("could not locate the #dir-content region within <main> in body:\n%s", body)
+	}
+	fragment := body[start:mainEnd]
+
+	if !strings.Contains(fragment, "Jazz") {
+		t.Error("hx-select=#dir-content fragment should contain the directory name")
+	}
+	if !strings.Contains(fragment, "01_so_what.flac") {
+		t.Error("hx-select=#dir-content fragment should contain track rows")
+	}
+}
+
+// TestHandleDirPage_RealTemplates_NoCollisionWithIndex verifies that loading
+// directory.html's isolated template group for /dir doesn't clobber the
+// cached index.html group, and vice versa, using the real templates.
+func TestHandleDirPage_RealTemplates_NoCollisionWithIndex(t *testing.T) {
+	srv, database, libDir := newTestServerWithRealTemplates(t)
+	libID := srv.cfg.Libraries[0].ID
+
+	absPath := filepath.Join(libDir, "Jazz")
+	mkdirAll(t, absPath)
+	database.UpsertDirectory(libID, "Jazz", "FLAC", false, "") //nolint:errcheck
+
+	// Render "/" first to warm the index.html template group cache.
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200 for '/', got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "Select a directory from the tree") {
+		t.Errorf("index page should render its own placeholder content; got:\n%s", w.Body.String())
+	}
+
+	// Now render /dir, which loads (and caches) its own isolated group.
+	req = httptest.NewRequest(http.MethodGet, apiURL("/dir", map[string]string{"path": absPath}), nil)
+	w = httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200 for /dir, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `id="dir-content"`) {
+		t.Errorf("directory page should render its own content block; got:\n%s", w.Body.String())
+	}
+
+	// Re-render "/" to ensure the index.html group is unaffected.
+	req = httptest.NewRequest(http.MethodGet, "/", nil)
+	w = httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200 for '/' after /dir, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "Select a directory from the tree") {
+		t.Errorf("index page content should be unaffected by rendering /dir; got:\n%s", w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), `id="dir-content"`) {
+		t.Errorf("index page must not leak directory.html's content block; got:\n%s", w.Body.String())
+	}
+}
+
 func TestHandleDirPage_ContentTypeHTML(t *testing.T) {
 	srv, database, libDir := newTestServerWithDirTemplate(t)
 	libID := srv.cfg.Libraries[0].ID

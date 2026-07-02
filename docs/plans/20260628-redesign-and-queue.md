@@ -223,10 +223,10 @@ The redesign comes from the approved Claude Design prototype; a decoded local co
 - Modify: `web/templates/directory.html` (define `content`, render through `base`), `internal/server/handlers_pages.go` (render dir page via per-page parse from Task 10)
 - Modify: `internal/server/handlers_pages_test.go`, `internal/server/directory_test.go`
 
-- [ ] convert `directory.html` to define the `content` block (dir stage) and reuse `base`'s head/topbar/queue and the shared `sidebar` partial; drop its duplicated `<head>/<body>` + scan-SSE copy (relies on Task 10's per-page parse + `sidebar.html`, so `content` no longer collides and `sidebar` is present on `/dir`)
-- [ ] preserve the swap contract: direct `/dir` renders full page; tree click still HTMX-swaps `#dir-content` (`hx-select` unchanged)
-- [ ] write tests: `/dir` full page includes shell ids (topbar, queue), the rendered `sidebar`, + `#dir-content`; HTMX-select region intact; both pages render without template collision
-- [ ] run tests + `npm run build` — must pass before next task
+- [x] convert `directory.html` to define the `content` block (dir stage) and reuse `base`'s head/topbar/queue and the shared `sidebar` partial; drop its duplicated `<head>/<body>` + scan-SSE copy (relies on Task 10's per-page parse + `sidebar.html`, so `content` no longer collides and `sidebar` is present on `/dir`)
+- [x] preserve the swap contract: direct `/dir` renders full page; tree click still HTMX-swaps `#dir-content` (`hx-select` unchanged)
+- [x] write tests: `/dir` full page includes shell ids (topbar, queue), the rendered `sidebar`, + `#dir-content`; HTMX-select region intact; both pages render without template collision
+- [x] run tests + `npm run build` — must pass before next task
 
 ### Task 14: Rebuild app shell — topbar, grid, seam (+ htmx via bundle)
 
