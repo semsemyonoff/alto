@@ -159,6 +159,13 @@ func (e *Engine) transcodeToDir(ctx context.Context, job Job, outDir string, pro
 		args := buildArgs(e.ffmpegBin, inPath, outPath, job.Preset)
 		slog.Info("transcoding file", "file", fi.Name, "output", outPath)
 		if err := e.ffmpegRun(ctx, args, makeProgressFn(fi, i, len(job.Files), progress)); err != nil {
+			// A canceled context kills the ffmpeg process, surfacing as an
+			// *exec.ExitError ("signal: killed") that does not wrap
+			// context.Canceled. Report cancellation as such so the queue maps
+			// it to "canceled" rather than "failed".
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			return fmt.Errorf("transcode %s: %w", fi.Name, err)
 		}
 		if err := e.probeFile(ctx, outPath); err != nil {
@@ -235,6 +242,12 @@ func (e *Engine) transcodeReplace(ctx context.Context, job Job, progress chan<- 
 		slog.Info("transcoding file (replace)", "file", fi.Name)
 		if err := e.ffmpegRun(ctx, args, makeProgressFn(fi, i, len(job.Files), progress)); err != nil {
 			rollback()
+			// See transcodeToDir: a canceled context kills ffmpeg with an
+			// error that does not wrap context.Canceled; surface cancellation
+			// so the queue marks the job "canceled" rather than "failed".
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			return fmt.Errorf("transcode %s: %w", fi.Name, err)
 		}
 

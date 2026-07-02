@@ -359,6 +359,60 @@ func TestTranscodeSharedOut(t *testing.T) {
 	}
 }
 
+// TestTranscodeCancelSurfacesContextCanceled verifies that when the context is
+// canceled mid-transcode, Transcode reports context.Canceled even though the
+// killed ffmpeg process returns an error that does NOT wrap it (as the real
+// exec.CommandContext path does with "signal: killed"). The queue relies on
+// this to map cancellation to a "canceled" status rather than "failed".
+func TestTranscodeCancelSurfacesContextCanceled(t *testing.T) {
+	for _, mode := range []string{"shared", "replace"} {
+		t.Run(mode, func(t *testing.T) {
+			libraryRoot := t.TempDir()
+			srcDir := filepath.Join(libraryRoot, "Artist", "Album")
+			if err := os.MkdirAll(srcDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(srcDir, "a.mp3"), []byte("audio"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			ctx, cancel := context.WithCancel(context.Background())
+			e := &Engine{
+				ffmpegBin: "ffmpeg",
+				ffmpegRun: func(ctx context.Context, args []string, progressFn func(string)) error {
+					// Simulate the process being killed by cancellation: the
+					// context is done, but the returned error does not wrap
+					// context.Canceled.
+					cancel()
+					return errors.New("signal: killed")
+				},
+				probeFile: func(ctx context.Context, path string) error { return nil },
+				diskAvail: func(string) (uint64, error) { return 1 << 30, nil },
+			}
+
+			job := Job{
+				ID:          "cancel-test",
+				LibraryRoot: libraryRoot,
+				LibraryName: "music",
+				SourceDir:   srcDir,
+				Preset:      FLACBalanced,
+				Files:       []FileInfo{{Name: "a.mp3", Duration: 100, Size: 1_000_000}},
+			}
+			if mode == "shared" {
+				job.OutputMode = OutputShared
+				job.OutputDir = t.TempDir()
+			} else {
+				job.OutputMode = OutputReplace
+			}
+
+			err := e.Transcode(ctx, job, nil)
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("Transcode error = %v, want context.Canceled", err)
+			}
+		})
+	}
+}
+
 func TestTranscodeReplaceSuccess(t *testing.T) {
 	srcDir := t.TempDir()
 

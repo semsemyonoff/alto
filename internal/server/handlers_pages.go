@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/semsemyonoff/ALTO/internal/db"
 	"github.com/semsemyonoff/ALTO/internal/transcode"
@@ -234,17 +236,45 @@ type SearchResultData struct {
 	CodecClass   string // CSS class for the codec badge
 }
 
+// foldIndex returns the byte range [start, end) in name of the first
+// case-insensitive (Unicode simple-fold) occurrence of q, or (-1, -1) if q is
+// empty or not found. It compares rune-by-rune against name directly so the
+// returned offsets are always valid slice bounds into name — unlike indexing a
+// separately-lowercased copy, whose byte boundaries can diverge when folding
+// changes a rune's encoded length.
+func foldIndex(name, q string) (int, int) {
+	if q == "" {
+		return -1, -1
+	}
+	for start := 0; start < len(name); {
+		ni, qi := start, 0
+		for qi < len(q) && ni < len(name) {
+			nr, nsz := utf8.DecodeRuneInString(name[ni:])
+			qr, qsz := utf8.DecodeRuneInString(q[qi:])
+			if unicode.ToLower(nr) != unicode.ToLower(qr) {
+				break
+			}
+			ni += nsz
+			qi += qsz
+		}
+		if qi == len(q) {
+			return start, ni
+		}
+		_, ssz := utf8.DecodeRuneInString(name[start:])
+		start += ssz
+	}
+	return -1, -1
+}
+
 // highlightMatch HTML-escapes name and wraps the first case-insensitive
 // occurrence of q in <mark>. Returns name escaped-but-unwrapped if q is
 // empty or not found.
 func highlightMatch(name, q string) template.HTML {
-	if q != "" {
-		if idx := strings.Index(strings.ToLower(name), strings.ToLower(q)); idx >= 0 {
-			before := template.HTMLEscapeString(name[:idx])
-			match := template.HTMLEscapeString(name[idx : idx+len(q)])
-			after := template.HTMLEscapeString(name[idx+len(q):])
-			return template.HTML(before + "<mark>" + match + "</mark>" + after) //nolint:gosec // components are escaped individually above
-		}
+	if start, end := foldIndex(name, q); start >= 0 {
+		before := template.HTMLEscapeString(name[:start])
+		match := template.HTMLEscapeString(name[start:end])
+		after := template.HTMLEscapeString(name[end:])
+		return template.HTML(before + "<mark>" + match + "</mark>" + after) //nolint:gosec // components are escaped individually above
 	}
 	return template.HTML(template.HTMLEscapeString(name)) //nolint:gosec // escaped above
 }

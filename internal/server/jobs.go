@@ -101,10 +101,6 @@ type jobState struct {
 
 	// done is closed after the engine exits and status is updated.
 	done chan struct{}
-
-	// fanoutDone is closed once the fanout goroutine has drained progress and
-	// finished updating latest/log, so callers can wait for finalized state.
-	fanoutDone chan struct{}
 }
 
 // updateLatest records the most recent progress report for the job. Guarded
@@ -370,9 +366,6 @@ func (jm *jobManager) workerLoop(parentCtx context.Context) {
 // while waiting on the engine or the fanout goroutine.
 func (jm *jobManager) runOneJob(js *jobState, job transcode.Job, ctx context.Context) error {
 	fanoutDone := make(chan struct{})
-	jm.mu.Lock()
-	js.fanoutDone = fanoutDone
-	jm.mu.Unlock()
 
 	go func() {
 		for p := range js.progress {

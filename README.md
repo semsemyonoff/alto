@@ -13,6 +13,9 @@ ALTO is a self-hosted web service for browsing and transcoding audio libraries. 
 - Cover art display (external files and embedded art extraction)
 - Transcoding to FLAC (lossless) or Opus (lossy) with preset and custom options
 - Three output modes: shared /out, local .alto-out/, or in-place replace with rollback
+- Transcode queue with a bounded worker pool (`ALTO_TRANSCODE_WORKERS`): jobs beyond capacity wait as `queued`, run in order, and can be canceled from a global queue panel present on every screen
+- Multi-library selector showing per-library indexed status and track counts
+- Server-side directory tree search
 - Real-time SSE progress for both transcoding and re-indexing
 - SQLite-backed index (WAL mode, concurrent reads)
 - Docker-first deployment

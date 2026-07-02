@@ -12,6 +12,41 @@ import (
 	"github.com/semsemyonoff/ALTO/internal/db"
 )
 
+// TestHighlightMatch covers the case-insensitive highlight helper: HTML
+// escaping of the surrounding name, correct match wrapping, the empty/no-match
+// fallbacks, and multibyte inputs whose lowercase encoding differs in length
+// from the original (which previously mis-sliced or panicked).
+func TestHighlightMatch(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		query string
+		want  string
+	}{
+		{"simple match", "Miles Davis", "miles", "<mark>Miles</mark> Davis"},
+		{"case insensitive", "JAZZ", "jazz", "<mark>JAZZ</mark>"},
+		{"no match", "Blues", "rock", "Blues"},
+		{"empty query", "Blues", "", "Blues"},
+		{"escapes surrounding", `A<b>&"C`, "b", `A&lt;<mark>b</mark>&gt;&amp;&#34;C`},
+		{"escapes matched special chars", `x<y`, "<", `x<mark>&lt;</mark>y`},
+		// Multibyte name matched by an ASCII query: offsets must track the
+		// original string's byte boundaries, not a lowercased copy's.
+		{"multibyte name ascii query", "İstanbul", "istanbul", "<mark>İstanbul</mark>"},
+		{"cyrillic case fold", "Дом", "д", "<mark>Д</mark>ом"},
+		// U+023A (Ⱥ, 2 bytes) lowercases to U+2C65 (ⱥ, 3 bytes): the query is
+		// longer than the match in the original string.
+		{"fold grows byte length", "Ⱥ", "ⱥ", "<mark>Ⱥ</mark>"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := string(highlightMatch(tt.input, tt.query))
+			if got != tt.want {
+				t.Errorf("highlightMatch(%q, %q) = %q, want %q", tt.input, tt.query, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestTemplateEngine_PerPageIsolation verifies that two pages which each
 // define a block of the same name ("content") are parsed into separate
 // template groups and don't collide, since each page is parsed with its own

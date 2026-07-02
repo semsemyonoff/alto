@@ -85,8 +85,8 @@ func TestJobManager_CompleteStatusMapping(t *testing.T) {
 	}
 }
 
-// TestJobState_MetadataPersistence verifies the new title/sub/job/cancel/
-// fanoutDone fields can be set and read back under jm.mu.
+// TestJobState_MetadataPersistence verifies the new title/sub/job/cancel
+// fields can be set and read back under jm.mu.
 func TestJobState_MetadataPersistence(t *testing.T) {
 	jm := newJobManager(nil, 0, context.Background())
 	job := transcode.Job{ID: "job1", SourceDir: "/dir1"}
@@ -100,7 +100,6 @@ func TestJobState_MetadataPersistence(t *testing.T) {
 
 	jm.mu.Lock()
 	js.cancel = cancel
-	js.fanoutDone = make(chan struct{})
 	jm.mu.Unlock()
 
 	jm.mu.Lock()
@@ -108,7 +107,6 @@ func TestJobState_MetadataPersistence(t *testing.T) {
 	gotSub := js.sub
 	gotJob := js.job
 	gotCancel := js.cancel
-	gotFanoutDone := js.fanoutDone
 	jm.mu.Unlock()
 
 	if gotTitle != "album1" {
@@ -122,9 +120,6 @@ func TestJobState_MetadataPersistence(t *testing.T) {
 	}
 	if gotCancel == nil {
 		t.Errorf("cancel func not persisted")
-	}
-	if gotFanoutDone == nil {
-		t.Errorf("fanoutDone channel not persisted")
 	}
 }
 

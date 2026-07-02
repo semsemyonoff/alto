@@ -33,3 +33,5 @@ Recent history uses Conventional Commit prefixes, mainly `feat:` and `fix:`, wit
 
 ## Transcode Queue API
 Transcode jobs run through a bounded worker pool with `queued`/`running`/`done`/`failed`/`canceled` states. `GET /api/jobs` lists all jobs (queue order); `GET /api/jobs/events` is the global SSE stream the queue UI subscribes to; `POST /api/jobs/{id}/cancel` cancels a queued or running job. `GET /api/transcode/{jobID}/log` still serves per-job logs, but the old per-job `GET /api/transcode/{jobID}/progress` SSE endpoint has been retired in favor of the global `/api/jobs/events` stream.
+
+`GET /api/tree/{libraryID}/search?q=` returns a flat, library-scoped, case-insensitive list of matching directories (backed by `db.GetDirectorySearch`, paired with `web/frontend/src/treesearch.ts`).
