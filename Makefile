@@ -1,7 +1,6 @@
-.PHONY: build test lint run docker-build
-
 BINARY := alto
 CMD := ./cmd/alto
+FRONTEND_DIR := web/frontend
 
 # Docker image name and tag
 ALTO_IMAGE ?= semsemyonoff/alto
@@ -11,9 +10,12 @@ ALTO_PLATFORMS ?= linux/amd64,linux/arm64
 
 export ALTO_IMAGE ALTO_TAG ALTO_PLATFORMS
 
-.PHONY: build test lint run docker-build image-build
+.PHONY: build test lint run docker-build image-build frontend-build dev
 
-build:
+frontend-build:
+	cd $(FRONTEND_DIR) && npm ci && npm run build
+
+build: frontend-build
 	go build -o $(BINARY) $(CMD)
 
 test:
@@ -24,6 +26,12 @@ lint:
 
 run:
 	go run $(CMD)
+
+# Run the Vite dev server and the Go server together for local frontend development.
+dev:
+	cd $(FRONTEND_DIR) && npm run dev & \
+	ALTO_VITE_DEV=1 go run $(CMD); \
+	kill %1
 
 docker-build:
 	docker build -t alto:latest .

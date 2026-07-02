@@ -1,4 +1,15 @@
-# Stage 1: Build
+# Stage 1: Frontend build
+FROM node:22-alpine AS frontend
+
+WORKDIR /build/web/frontend
+
+COPY web/frontend/package.json web/frontend/package-lock.json* ./
+RUN npm ci
+
+COPY web/frontend .
+RUN npm run build
+
+# Stage 2: Build
 FROM golang:1.26-alpine AS builder
 
 WORKDIR /build
@@ -7,9 +18,10 @@ COPY go.mod go.sum* ./
 RUN go mod download
 
 COPY . .
+COPY --from=frontend /build/web/static/dist /build/web/static/dist
 RUN CGO_ENABLED=0 GOOS=linux go build -o /alto ./cmd/alto
 
-# Stage 2: Runtime
+# Stage 3: Runtime
 FROM alpine:3.21
 
 RUN apk add --no-cache ffmpeg

@@ -200,11 +200,11 @@ The redesign comes from the approved Claude Design prototype; a decoded local co
 - Create: `.dockerignore` (if absent)
 - Delete: `web/static/js/htmx-ext-sse.min.js` (already unreferenced)
 
-- [ ] `make frontend-build` (`npm ci && npm run build`), `make dev` (Vite dev + `go run`), make `build` depend on `frontend-build`
-- [ ] Dockerfile Node build stage (`npm ci && npm run build`) producing `web/static/dist` before `go build`; `.dockerignore` excludes `node_modules`, keeps `dist`
-- [ ] remove the already-unreferenced `htmx-ext-sse.min.js` (vendored `htmx.min.js` and `layout.js` are removed later, when their template references are gone — Tasks 14/15)
-- [ ] smoke check: `make build` yields a binary + non-empty `web/static/dist/.vite/manifest.json`
-- [ ] run `make build` — must pass before next task
+- [x] `make frontend-build` (`npm ci && npm run build`), `make dev` (Vite dev + `go run`), make `build` depend on `frontend-build`
+- [x] Dockerfile Node build stage (`npm ci && npm run build`) producing `web/static/dist` before `go build`; `.dockerignore` excludes `node_modules`, keeps `dist`
+- [x] remove the already-unreferenced `htmx-ext-sse.min.js` (vendored `htmx.min.js` and `layout.js` are removed later, when their template references are gone — Tasks 14/15)
+- [x] smoke check: `make build` yields a binary + non-empty `web/static/dist/.vite/manifest.json`
+- [x] run `make build` — must pass before next task
 
 ### Task 12: Port design-system CSS (tokens, base, typography)
 

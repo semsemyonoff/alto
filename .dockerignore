@@ -1,0 +1,6 @@
+.git
+.ralphex
+node_modules
+web/static/dist
+alto
+*.md
