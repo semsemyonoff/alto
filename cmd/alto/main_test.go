@@ -161,6 +161,92 @@ func TestParseConfig_EnvOverrides(t *testing.T) {
 	}
 }
 
+func TestParseConfig_WorkersDefault(t *testing.T) {
+	t.Setenv("ALTO_LIBRARIES", "Music:/music")
+	t.Setenv("ALTO_TRANSCODE_WORKERS", "")
+
+	cfg, err := ParseConfig()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Workers != 1 {
+		t.Errorf("default workers: got %d, want %d", cfg.Workers, 1)
+	}
+}
+
+func TestParseConfig_WorkersValid(t *testing.T) {
+	t.Setenv("ALTO_LIBRARIES", "Music:/music")
+	t.Setenv("ALTO_TRANSCODE_WORKERS", "4")
+
+	cfg, err := ParseConfig()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Workers != 4 {
+		t.Errorf("workers: got %d, want %d", cfg.Workers, 4)
+	}
+}
+
+func TestParseConfig_WorkersClampedToMinOne(t *testing.T) {
+	t.Setenv("ALTO_LIBRARIES", "Music:/music")
+	t.Setenv("ALTO_TRANSCODE_WORKERS", "0")
+
+	cfg, err := ParseConfig()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Workers != 1 {
+		t.Errorf("workers: got %d, want %d", cfg.Workers, 1)
+	}
+
+	t.Setenv("ALTO_TRANSCODE_WORKERS", "-3")
+	cfg, err = ParseConfig()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Workers != 1 {
+		t.Errorf("workers: got %d, want %d", cfg.Workers, 1)
+	}
+}
+
+func TestParseConfig_WorkersInvalid(t *testing.T) {
+	t.Setenv("ALTO_LIBRARIES", "Music:/music")
+	t.Setenv("ALTO_TRANSCODE_WORKERS", "not-a-number")
+
+	_, err := ParseConfig()
+	if err == nil {
+		t.Fatal("expected error for invalid ALTO_TRANSCODE_WORKERS")
+	}
+	if !contains(err.Error(), "ALTO_TRANSCODE_WORKERS") {
+		t.Errorf("error %q does not mention env var name", err.Error())
+	}
+}
+
+func TestGetEnvIntDefault(t *testing.T) {
+	t.Setenv("ALTO_TEST_INT", "")
+	got, err := getEnvIntDefault("ALTO_TEST_INT", 7)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != 7 {
+		t.Errorf("got %d, want %d", got, 7)
+	}
+
+	t.Setenv("ALTO_TEST_INT", "  12 ")
+	got, err = getEnvIntDefault("ALTO_TEST_INT", 7)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != 12 {
+		t.Errorf("got %d, want %d", got, 12)
+	}
+
+	t.Setenv("ALTO_TEST_INT", "abc")
+	if _, err := getEnvIntDefault("ALTO_TEST_INT", 7); err == nil {
+		t.Fatal("expected error for non-numeric value")
+	}
+}
+
 func contains(s, sub string) bool {
 	return len(s) >= len(sub) && (s == sub || len(sub) == 0 ||
 		func() bool {

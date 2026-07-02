@@ -37,6 +37,7 @@ type Config struct {
 	CacheDir    string
 	TemplateDir string // defaults to "web/templates"
 	StaticDir   string // defaults to "web/static"
+	Workers     int    // transcode worker pool size; defaults to 1
 }
 
 // ScanEvent represents a scan lifecycle event broadcast over SSE.
@@ -156,7 +157,7 @@ func NewWithEngine(database *db.DB, scanner LibraryScanner, engine TranscodeEngi
 		cfg:            cfg,
 		mux:            http.NewServeMux(),
 		tmpl:           templateEngine{dir: tmplDir},
-		jobs:           newJobManager(engine, 1, shutdownCtx),
+		jobs:           newJobManager(engine, cfg.Workers, shutdownCtx),
 		staticDir:      staticDir,
 		shutdownCtx:    shutdownCtx,
 		shutdownCancel: shutdownCancel,

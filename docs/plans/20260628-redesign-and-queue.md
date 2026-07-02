@@ -161,10 +161,10 @@ The redesign comes from the approved Claude Design prototype; a decoded local co
 **Files:**
 - Modify: `cmd/alto/main.go` (+ int env helper), `internal/server/server.go` (`Config.Workers` → `newJobManager`), `cmd/alto/*_test.go`
 
-- [ ] add `Config.Workers` + an int env parse helper (default 1, min 1, invalid → error/clamp consistent with existing env handling)
-- [ ] parse `ALTO_TRANSCODE_WORKERS`, thread config → `Server`/`NewWithEngine` → `newJobManager`
-- [ ] write tests for env parsing (default/valid/invalid)
-- [ ] run tests — must pass before next task
+- [x] add `Config.Workers` + an int env parse helper (default 1, min 1, invalid → error/clamp consistent with existing env handling)
+- [x] parse `ALTO_TRANSCODE_WORKERS`, thread config → `Server`/`NewWithEngine` → `newJobManager`
+- [x] write tests for env parsing (default/valid/invalid)
+- [x] run tests — must pass before next task
 
 ### Task 9: Scaffold Vite + TS frontend (Alpine, HTMX, Vitest, HTMX re-init)
 

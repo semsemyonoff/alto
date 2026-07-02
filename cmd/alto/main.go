@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -20,11 +21,12 @@ import (
 
 // Config holds all runtime configuration parsed from environment variables.
 type Config struct {
-	Libraries  []Library
-	Port       string
-	OutputDir  string
-	DBPath     string
-	CacheDir   string
+	Libraries []Library
+	Port      string
+	OutputDir string
+	DBPath    string
+	CacheDir  string
+	Workers   int
 }
 
 // Library represents a named, mounted music library.
@@ -50,6 +52,15 @@ func ParseConfig() (*Config, error) {
 		return nil, err
 	}
 	cfg.Libraries = libs
+
+	workers, err := getEnvIntDefault("ALTO_TRANSCODE_WORKERS", 1)
+	if err != nil {
+		return nil, err
+	}
+	if workers < 1 {
+		workers = 1
+	}
+	cfg.Workers = workers
 
 	return cfg, nil
 }
@@ -113,6 +124,20 @@ func getEnvDefault(key, def string) string {
 	return def
 }
 
+// getEnvIntDefault reads an integer env var, returning def if unset.
+// Returns an error if the value is set but not a valid integer.
+func getEnvIntDefault(key string, def int) (int, error) {
+	v := os.Getenv(key)
+	if v == "" {
+		return def, nil
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s %q: must be an integer", key, v)
+	}
+	return n, nil
+}
+
 func main() {
 	cfg, err := ParseConfig()
 	if err != nil {
@@ -166,6 +191,7 @@ func main() {
 		Libraries: libCfgs,
 		OutputDir: cfg.OutputDir,
 		CacheDir:  cfg.CacheDir,
+		Workers:   cfg.Workers,
 	}
 	srv := server.NewWithEngine(database, scanner, engine, srvCfg)
 
