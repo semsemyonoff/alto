@@ -333,9 +333,9 @@ The redesign comes from the approved Claude Design prototype; a decoded local co
 - [x] run `cd web/frontend && npm run test && npm run build`
 
 ### Task 23: [Final] Update documentation
-- [ ] update `CLAUDE.md` (`ALTO_TRANSCODE_WORKERS`; frontend toolchain + `make dev`/`make frontend-build`; `web/frontend` layout; Node prerequisite; retired `/api/transcode/{id}/progress`, new `/api/jobs*`)
-- [ ] update `README.md` if it documents env/build/run
-- [ ] move this plan to `docs/plans/completed/`
+- [x] update `CLAUDE.md` (`ALTO_TRANSCODE_WORKERS`; frontend toolchain + `make dev`/`make frontend-build`; `web/frontend` layout; Node prerequisite; retired `/api/transcode/{id}/progress`, new `/api/jobs*`)
+- [x] update `README.md` if it documents env/build/run
+- [x] move this plan to `docs/plans/completed/`
 
 ## Post-Completion
 *Items requiring manual intervention or external systems — informational only.*

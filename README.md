@@ -63,6 +63,7 @@ All configuration is via environment variables.
 | `ALTO_OUTPUT_DIR` | `/out` | Shared output directory for transcoded files (Shared /out mode) |
 | `ALTO_DB_PATH` | `./alto.db` | SQLite database file path |
 | `ALTO_CACHE_DIR` | `./cache` | App-managed cache for extracted cover art — keep separate from library mounts |
+| `ALTO_TRANSCODE_WORKERS` | `1` | Number of concurrent transcode jobs; additional jobs sit `queued` until a worker is free |
 
 ## Docker Usage
 
@@ -136,11 +137,14 @@ Select "Custom" in the preset dropdown to configure manually:
 ## Local Development
 
 ```sh
-# Build binary
+# Build binary (also builds the frontend bundle via `frontend-build`)
 make build
 
 # Run locally (requires ALTO_LIBRARIES set)
 ALTO_LIBRARIES="Music:/path/to/music" make run
+
+# Run the Vite dev server + Go server together, with frontend HMR
+ALTO_LIBRARIES="Music:/path/to/music" make dev
 
 # Run tests
 make test
@@ -152,7 +156,7 @@ make lint
 make docker-build
 ```
 
-Local development requires Go `1.26.2`, `ffmpeg`, and `ffprobe` on `PATH`.
+Local development requires Go `1.26.2`, Node.js (for the `web/frontend` Vite/TypeScript toolchain), `ffmpeg`, and `ffprobe` on `PATH`. The frontend source lives in `web/frontend` (Vite + TypeScript + Alpine.js + PostCSS); `make frontend-build` runs `npm ci && npm run build` there and writes the bundle to `web/static/dist`.
 
 The checked-in [`docker-compose.yml`](docker-compose.yml) is development-oriented: it builds from the local working tree and expects you to replace the host bind mounts with paths available on your machine.
 
