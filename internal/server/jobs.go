@@ -251,6 +251,20 @@ func (jm *jobManager) broadcastEvent(ev jobEvent) {
 	jm.broadcastEventLocked(ev)
 }
 
+// snapshotJobs returns the current jobEvent for every job in order, in the
+// same order — the shape used by GET /api/jobs.
+func (jm *jobManager) snapshotJobs() []jobEvent {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	out := make([]jobEvent, 0, len(jm.order))
+	for _, id := range jm.order {
+		if js, ok := jm.jobs[id]; ok {
+			out = append(out, jm.eventForLocked(js))
+		}
+	}
+	return out
+}
+
 // subscribeEventsWithSnapshot atomically registers a new global event
 // subscriber and captures the current job list (in order), both under one
 // mu lock, so a caller that renders the snapshot and then streams live

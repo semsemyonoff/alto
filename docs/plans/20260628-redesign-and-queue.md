@@ -131,10 +131,10 @@ The redesign comes from the approved Claude Design prototype; a decoded local co
 **Files:**
 - Modify: `internal/server/handlers_transcode.go`, `internal/server/server.go`, `internal/server/handlers_transcode_test.go`
 
-- [ ] add `handleJobs` returning `{"jobs":[...]}` from the snapshot in `order` using the centralized pct-shaping helper (done→100 etc.)
-- [ ] register `GET /api/jobs`
-- [ ] write tests for empty + mixed-status (incl. terminal) lists (JSON shape + order + done-at-100)
-- [ ] run tests — must pass before next task
+- [x] add `handleJobs` returning `{"jobs":[...]}` from the snapshot in `order` using the centralized pct-shaping helper (done→100 etc.)
+- [x] register `GET /api/jobs`
+- [x] write tests for empty + mixed-status (incl. terminal) lists (JSON shape + order + done-at-100)
+- [x] run tests — must pass before next task
 
 ### Task 6: `GET /api/jobs/events` global SSE (additive; old progress kept)
 

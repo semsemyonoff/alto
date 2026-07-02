@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -482,6 +483,105 @@ func TestHandleTranscodeLog_NParam(t *testing.T) {
 	lines, _ := resp["lines"].([]any)
 	if len(lines) > 1 {
 		t.Errorf("expected at most 1 line with n=1, got %d", len(lines))
+	}
+}
+
+// --- GET /api/jobs ---
+
+func TestHandleJobs_Empty(t *testing.T) {
+	jm := newJobManager(nil, 0, context.Background())
+	srv := &Server{jobs: jm}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/jobs", nil)
+	w := httptest.NewRecorder()
+	srv.handleJobs(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var resp struct {
+		Jobs []jobEvent `json:"jobs"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Jobs) != 0 {
+		t.Errorf("expected no jobs, got %d", len(resp.Jobs))
+	}
+}
+
+func TestHandleJobs_MixedStatus(t *testing.T) {
+	jm := newJobManager(nil, 0, context.Background())
+	srv := &Server{jobs: jm}
+
+	// job1: queued, then completed successfully — pct must show 100 even
+	// though no progress report ever arrived.
+	js1, started := jm.start("job1", "/dir1", transcode.Job{ID: "job1"}, "Album One", "flac -> opus/Balanced")
+	if !started {
+		t.Fatalf("start job1: expected success")
+	}
+	jm.complete(js1.id, nil)
+
+	// job2: queued, then failed.
+	js2, started := jm.start("job2", "/dir2", transcode.Job{ID: "job2"}, "Album Two", "flac -> opus/Balanced")
+	if !started {
+		t.Fatalf("start job2: expected success")
+	}
+	jm.complete(js2.id, errors.New("boom"))
+
+	// job3: canceled while still queued.
+	if _, started := jm.start("job3", "/dir3", transcode.Job{ID: "job3"}, "Album Three", "flac -> opus/Balanced"); !started {
+		t.Fatalf("start job3: expected success")
+	}
+	if result := jm.cancel("job3"); result != cancelResultCanceled {
+		t.Fatalf("cancel job3: expected canceled, got %v", result)
+	}
+
+	// job4: still queued.
+	if _, started := jm.start("job4", "/dir4", transcode.Job{ID: "job4"}, "Album Four", "flac -> opus/Balanced"); !started {
+		t.Fatalf("start job4: expected success")
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/jobs", nil)
+	w := httptest.NewRecorder()
+	srv.handleJobs(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Jobs []jobEvent `json:"jobs"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+
+	wantOrder := []string{"job1", "job2", "job3", "job4"}
+	if len(resp.Jobs) != len(wantOrder) {
+		t.Fatalf("expected %d jobs, got %d: %+v", len(wantOrder), len(resp.Jobs), resp.Jobs)
+	}
+	for i, id := range wantOrder {
+		if resp.Jobs[i].ID != id {
+			t.Errorf("jobs[%d].ID = %q, want %q", i, resp.Jobs[i].ID, id)
+		}
+	}
+
+	byID := make(map[string]jobEvent, len(resp.Jobs))
+	for _, j := range resp.Jobs {
+		byID[j.ID] = j
+	}
+
+	if got := byID["job1"]; got.Status != JobStatusDone || got.Pct != 100 || got.Title != "Album One" {
+		t.Errorf("job1 = %+v, want status done, pct 100, title Album One", got)
+	}
+	if got := byID["job2"]; got.Status != JobStatusFailed {
+		t.Errorf("job2 status = %q, want failed", got.Status)
+	}
+	if got := byID["job3"]; got.Status != JobStatusCanceled {
+		t.Errorf("job3 status = %q, want canceled", got.Status)
+	}
+	if got := byID["job4"]; got.Status != JobStatusQueued {
+		t.Errorf("job4 status = %q, want queued", got.Status)
 	}
 }
 

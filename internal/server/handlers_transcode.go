@@ -164,6 +164,13 @@ func (s *Server) handleTranscodeStart(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]string{"job_id": id})
 }
 
+// handleJobs returns every job currently tracked (queued, running, or
+// terminal until its 30-minute eviction), in queue order.
+// GET /api/jobs
+func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"jobs": s.jobs.snapshotJobs()})
+}
+
 // handleTranscodeProgress streams real-time progress for a job via SSE.
 // GET /api/transcode/{jobID}/progress
 func (s *Server) handleTranscodeProgress(w http.ResponseWriter, r *http.Request) {
