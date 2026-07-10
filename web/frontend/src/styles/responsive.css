@@ -77,6 +77,7 @@
      body.tree-open / body.dock-open. It sits above the queue/FAB (dimming and
      blocking them) but below the open tree drawer / dock overlay. */
   .scrim {
+    display: block;
     position: fixed;
     inset: 0;
     z-index: 60;
