@@ -12,8 +12,136 @@
      body.queue-open  → queue expanded ⇒ hide the FAB (no overlap)
    ===================================================================== */
 
+/* ---------- desktop defaults: the mobile controls are hidden ---------- */
+/* These persistent controls (base.html / sidebar.html / directory.html) only
+   surface inside the media queries below; on desktop they stay out of the way. */
+.m-hamburger,
+.scrim,
+.m-transcode,
+.dock-x {
+  display: none;
+}
+
+.tree-x {
+  display: none;
+  margin-left: auto;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  color: var(--ink-dim);
+  font-size: 22px;
+  line-height: 1;
+  place-items: center;
+}
+
 /* ---------- shared: tablet + mobile (<=1023px) ---------- */
 @media (max-width: 1023px) {
+  /* Hamburger toggles the tree drawer; lives in .brandwrap in base.html. */
+  .m-hamburger {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 4px;
+    width: 38px;
+    height: 38px;
+    padding: 9px;
+    border-radius: 9px;
+    border: 1px solid var(--hair-strong);
+    background: linear-gradient(180deg, #2a2418, #1a150d);
+    box-shadow: 0 1px 0 rgba(255, 247, 233, 0.05) inset;
+  }
+
+  .m-hamburger span {
+    display: block;
+    height: 2px;
+    border-radius: 2px;
+    background: var(--ink-dim);
+  }
+
+  /* Make the tree header a row so the close button can pin to its right. */
+  .tree-section-header {
+    display: flex;
+    align-items: center;
+  }
+
+  .tree-x {
+    display: grid;
+  }
+
+  .tree-x:hover {
+    background: rgba(255, 247, 233, 0.05);
+    color: var(--ink);
+  }
+
+  /* Shared dark scrim behind any open drawer/sheet. It is revealed by
+     body.tree-open / body.dock-open — that reveal rule lands in Task 4 along
+     with the dock overlay + z-index stack. */
+  .scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    background: rgba(10, 7, 4, 0.6);
+    -webkit-backdrop-filter: blur(2px);
+    backdrop-filter: blur(2px);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.28s;
+  }
+
+  /* Row layout so the close button sits opposite the "Transcode" label. */
+  .dock-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  /* Close button inside the dock head (directory.html). */
+  .dock-x {
+    display: grid;
+    place-items: center;
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    color: var(--ink-dim);
+    font-size: 20px;
+    cursor: pointer;
+    transition: 0.15s;
+  }
+
+  .dock-x:hover {
+    background: rgba(255, 247, 233, 0.05);
+    color: var(--ink);
+  }
+
+  /* Floating transcode trigger (base.html). Base appearance only — its
+     visibility gating (body.has-sel to show, body.dock-open/queue-open to
+     hide) is wired in Task 4. */
+  .m-transcode {
+    position: fixed;
+    right: 16px;
+    bottom: 66px;
+    z-index: 49;
+    align-items: center;
+    gap: 9px;
+    font-family: var(--fd);
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    font-size: 13.5px;
+    color: #0d221d;
+    background: var(--grad);
+    border-radius: 999px;
+    padding: 13px 20px;
+    box-shadow: 0 10px 26px -8px rgba(58, 212, 196, 0.6), 0 0 0 1px rgba(58, 212, 196, 0.5);
+    transition: opacity 0.2s, transform 0.15s;
+  }
+
+  .m-transcode:active {
+    transform: scale(0.96);
+  }
+
+  .m-transcode .ic {
+    font-size: 15px;
+  }
   /* Collapse the 3-column grid to a single content column; the fixed drawer
      and the (removed) resizer leave the flow. The 4th `auto` grid row
      collapses on its own once .queue becomes fixed (Task 5). */

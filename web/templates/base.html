@@ -13,6 +13,9 @@
 
   <header class="topbar">
     <div class="brandwrap">
+      <button type="button" class="m-hamburger" aria-label="Open directories">
+        <span></span><span></span><span></span>
+      </button>
       <a class="brand" href="/" aria-label="Audio Library Transcode Organizer home">
         <span class="mark"><img src="/static/logo.svg" alt="ALTO logo"></span>
         <span class="wordmark"><b>ALTO</b><small>Audio Library Transcode Organizer</small></span>
@@ -75,7 +78,8 @@
     {{template "content" .}}
   </main>
 
-  <section class="queue" id="queue" x-data="altoQueue()" :class="{ collapsed: collapsed }">
+  <section class="queue" id="queue" x-data="altoQueue()" :class="{ collapsed: collapsed }"
+           x-effect="document.body.classList.toggle('queue-open', !collapsed)">
     <div class="q-head">
       <div class="qt">Queue <span class="bub" x-text="bubble"></span></div>
       <button type="button" class="collapse" @click="toggleCollapse()">
@@ -140,6 +144,11 @@
   </section>
 
 </div>
+
+<div class="scrim" aria-hidden="true"></div>
+<button type="button" class="m-transcode" aria-label="Open transcode panel">
+  <span class="ic">&#9881;</span> Transcode
+</button>
 
 <script>(function(){
   var scanIndic = document.getElementById('scan-indicator');

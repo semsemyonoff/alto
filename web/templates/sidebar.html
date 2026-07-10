@@ -1,6 +1,6 @@
 {{define "sidebar"}}
 <div class="tree-section">
-  <div class="tree-section-header">Directories</div>
+  <div class="tree-section-header">Directories<button type="button" class="tree-x" aria-label="Close directories">&times;</button></div>
   <div class="tree-search" x-data="altoTreeSearch()">
     <input id="tree-search-input" type="text" placeholder="Search directories…" autocomplete="off" spellcheck="false"
            x-on:input.debounce.250ms="onInput($event.target.value)">
