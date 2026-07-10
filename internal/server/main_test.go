@@ -13,6 +13,6 @@ import (
 // container (e.g. the pre-push hook's `dwe cmd app.test`). Tests that need dev
 // mode set it explicitly via t.Setenv, which restores the empty baseline after.
 func TestMain(m *testing.M) {
-	os.Unsetenv("ALTO_VITE_DEV")
+	_ = os.Unsetenv("ALTO_VITE_DEV")
 	os.Exit(m.Run())
 }
