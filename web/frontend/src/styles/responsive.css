@@ -271,8 +271,139 @@
   }
 }
 
+/* ---------- tablet-only (640–1023px) ---------- */
+@media (min-width: 640px) and (max-width: 1023px) {
+  /* Prototype .stage → app .app-content (the scroll container). Loosen the side
+     padding a touch and keep the extra bottom clearance so content still clears
+     the fixed queue strip + FAB (prototype line 325). */
+  .app-content {
+    padding: 28px 40px 92px;
+  }
+
+  /* Prototype .brand (the whole left group) → app .brandwrap (prototype 326). */
+  .brandwrap {
+    gap: 11px;
+  }
+}
+
 /* ---------- mobile (<=639px) ---------- */
 @media (max-width: 639px) {
+  /* ---- topbar collapses: hamburger + centered library + icon-only reindex ---- */
+  /* Shorten the topbar row so the shrunken controls sit tighter (proto line 331). */
+  .shell {
+    grid-template-rows: 52px 2px minmax(0, 1fr) auto;
+  }
+
+  /* hamburger | centered library | reindex (proto line 332). */
+  .topbar {
+    grid-template-columns: auto 1fr auto;
+    padding: 0 10px;
+    gap: 8px;
+  }
+
+  .brandwrap {
+    gap: 9px;
+  }
+
+  /* Drop the wordmark, version badges and status text; only the hamburger, logo,
+     library selector and reindex icon fit at phone width (proto line 334). */
+  .wordmark,
+  .appver,
+  .status {
+    display: none;
+  }
+
+  .mark img {
+    height: 26px;
+  }
+
+  /* Library selector shrinks; the "Library" label is dropped (proto lines 337–338). */
+  .libsel {
+    padding: 7px 10px 7px 14px;
+    gap: 7px;
+  }
+
+  .libsel .lbl {
+    display: none;
+  }
+
+  .libmenu {
+    min-width: 200px;
+  }
+
+  /* Reindex button collapses to its icon only (proto lines 340–341). */
+  .btn-reindex {
+    font-size: 0;
+    padding: 9px;
+    gap: 0;
+  }
+
+  .btn-reindex .ic {
+    font-size: 16px;
+  }
+
+  /* ---- directory stage tightens; cover + title scale down (proto 344–350) ---- */
+  .app-content {
+    padding: 16px 14px 96px;
+  }
+
+  .dir-header {
+    gap: 16px;
+    margin-bottom: 22px;
+  }
+
+  .dir-cover {
+    width: 112px;
+    height: 112px;
+  }
+
+  .dir-title {
+    font-size: 24px;
+    margin-bottom: 10px;
+  }
+
+  .dir-breadcrumb {
+    margin-bottom: 9px;
+    font-size: 10px;
+  }
+
+  .dir-subline {
+    gap: 8px 12px;
+    font-size: 12px;
+  }
+
+  /* ---- tracks table: drop the "tech" columns, let it fit a 375px viewport ---- */
+  /* Override the desktop min-width:560px (stage.css:107) and the filename's
+     min-width:200px (stage.css:144) so the table stops forcing horizontal scroll
+     once the tech columns are hidden. */
+  .tracks-table {
+    min-width: 0;
+  }
+
+  .tracks-table thead th {
+    padding: 9px 8px;
+  }
+
+  .tracks-table tbody td {
+    padding: 10px 8px;
+    font-size: 12.5px;
+  }
+
+  /* Bitrate / sample-rate / channels (th.tech + td.tech, 1:1 with the prototype)
+     are the least essential; hide them so filename/codec/duration/size stay
+     readable (proto line 353). */
+  .tech {
+    display: none;
+  }
+
+  .col-num {
+    width: 26px;
+  }
+
+  .col-filename {
+    min-width: 0;
+  }
+
   /* On phones the dock is a bottom-sheet instead of a right drawer: it spans
      the width, is capped in height, slides up from the bottom, gets a rounded
      top and a drag-handle affordance (mirrors prototype lines 350–363). */
