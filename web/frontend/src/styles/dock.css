@@ -414,13 +414,3 @@
   margin-top: 3px;
   display: block;
 }
-
-@media (max-width: 900px) {
-  .dir-page {
-    flex-direction: column;
-  }
-
-  .dock {
-    width: 100%;
-  }
-}

@@ -1,0 +1,58 @@
+/* =====================================================================
+   RESPONSIVE  ·  tablet + mobile adaptation
+   Ported from docs/design/ALTO Prototype.html (lines 264–369) and adapted
+   to the app's grid + class names (see the prototype→app class map in the
+   plan). All rules live behind media queries so the desktop layout is
+   untouched. Imported LAST in index.css so it overrides the base modules.
+
+   State model — body classes toggled by mobile.ts (Task 3):
+     body.tree-open   → sidebar drawer visible
+     body.dock-open   → dock overlay visible
+     body.has-sel     → a directory with tracks is shown ⇒ FAB appears
+     body.queue-open  → queue expanded ⇒ hide the FAB (no overlap)
+   ===================================================================== */
+
+/* ---------- shared: tablet + mobile (<=1023px) ---------- */
+@media (max-width: 1023px) {
+  /* Collapse the 3-column grid to a single content column; the fixed drawer
+     and the (removed) resizer leave the flow. The 4th `auto` grid row
+     collapses on its own once .queue becomes fixed (Task 5). */
+  .shell {
+    grid-template-columns: 1fr;
+  }
+
+  .app-sidebar-resizer {
+    display: none;
+  }
+
+  /* Directory tree becomes a fixed left drawer (tablet AND mobile), revealed
+     by body.tree-open. Give it an internal flex-column scroll context so the
+     inner .tree-section still scrolls, and bottom padding so a long tree
+     clears the fixed queue strip. */
+  .app-sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    height: 100%;
+    width: min(320px, 86vw);
+    z-index: 65;
+    display: flex;
+    flex-direction: column;
+    transform: translateX(-101%);
+    transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    box-shadow: 24px 0 60px -24px #000;
+  }
+
+  body.tree-open .app-sidebar {
+    transform: none;
+  }
+
+  /* The wood-grain right seam is a desktop divider; drop it in drawer mode. */
+  .app-sidebar::after {
+    display: none;
+  }
+
+  .tree-section {
+    padding-bottom: 64px;
+  }
+}
