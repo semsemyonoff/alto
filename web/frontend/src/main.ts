@@ -3,6 +3,7 @@ import htmx from 'htmx.org'
 import { reinitAlpineOnSwap } from './alpine-swap'
 import { altoDock } from './dock'
 import { altoLibMenu } from './libmenu'
+import { initMobileControls, syncSelection } from './mobile'
 import { altoQueue } from './queue'
 import { altoTreeSearch } from './treesearch'
 import { initSidebarResizer } from './ui/resizer'
@@ -60,11 +61,15 @@ document.addEventListener('click', (event) => {
   event.preventDefault()
   document.querySelectorAll('.tree-node-row').forEach((el) => el.classList.remove('active'))
   link.closest('.tree-node-row')?.classList.add('active')
+  // Navigating from the mobile tree drawer should dismiss it so the freshly
+  // swapped-in directory is visible; the dock/has-sel state is recomputed below.
+  document.body.classList.remove('tree-open')
   htmx.trigger(link, 'altonav', {})
 })
 
 document.addEventListener('htmx:afterSwap', (event) => {
   reinitAlpineOnSwap(Alpine, (event as CustomEvent<{ target: EventTarget }>).detail.target)
+  syncSelection(document.getElementById('content-area'))
 })
 
 // Restoring a page from htmx's history cache (back/forward) drops the swapped-in
@@ -73,7 +78,10 @@ document.addEventListener('htmx:afterSwap', (event) => {
 // controls stay live after navigation.
 document.addEventListener('htmx:historyRestore', () => {
   reinitAlpineOnSwap(Alpine, document.getElementById('content-area'))
+  syncSelection(document.getElementById('content-area'))
 })
 
 initSidebarResizer()
+initMobileControls()
+syncSelection(document.getElementById('content-area'))
 Alpine.start()
