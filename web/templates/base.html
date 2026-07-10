@@ -12,10 +12,14 @@
 <div class="shell">
 
   <header class="topbar">
-    <a class="brand" href="/" aria-label="Audio Library Transcode Organizer home">
-      <span class="mark"><img src="/static/logo.svg" alt="ALTO logo"></span>
-      <span class="wordmark"><b>ALTO</b><small>Audio Library Transcode Organizer</small></span>
-    </a>
+    <div class="brandwrap">
+      <a class="brand" href="/" aria-label="Audio Library Transcode Organizer home">
+        <span class="mark"><img src="/static/logo.svg" alt="ALTO logo"></span>
+        <span class="wordmark"><b>ALTO</b><small>Audio Library Transcode Organizer</small></span>
+      </a>
+      {{if .Version}}<span class="appver" title="ALTO {{.Version}}">{{.Version}}</span>{{end}}
+      {{if .FFmpegVersion}}<span class="appver ffver" title="ffmpeg {{.FFmpegVersion}}">ffmpeg {{.FFmpegVersion}}</span>{{end}}
+    </div>
     {{if .Libraries}}
     <div class="libwrap"
          x-data="altoLibMenu()"
@@ -102,10 +106,23 @@
                     x-cloak
                     title="Cancel"
                     @click.stop="cancel(job)">&times;</button>
-            <span class="q-chev" x-show="!isCancelable(job)" x-cloak title="Transcode logs">&#9662;</span>
+            <button type="button"
+                    class="q-remove"
+                    x-show="isRemovable(job)"
+                    x-cloak
+                    title="Remove from queue"
+                    @click.stop="remove(job)">&times;</button>
           </div>
           <div class="q-logs">
-            <div class="inner">
+            <div class="q-logs-bar">
+              <span class="q-chev-hint" title="Transcode logs">&#9662; log</span>
+              <button type="button"
+                      class="q-follow"
+                      :class="{ on: job.follow }"
+                      @click.stop="toggleFollow(job)"
+                      x-text="job.follow ? '⤓ Following' : '⤓ Follow'"></button>
+            </div>
+            <div class="inner" :data-log-scroll="job.id" @scroll="onLogScroll(job, $event)">
               <template x-if="job.logsLoading">
                 <div class="ll">loading…</div>
               </template>

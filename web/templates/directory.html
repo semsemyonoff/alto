@@ -24,18 +24,11 @@
   </div>
 
   {{if .Tracks}}
-  <div class="tracks-section" x-data="{ showTech: false }">
+  <div class="tracks-section">
     <div class="tracks-toolbar">
       <span class="tracks-toolbar-label">Tracks</span>
-      <button type="button"
-              class="tech-toggle"
-              :class="{ on: showTech }"
-              :aria-pressed="showTech.toString()"
-              @click="showTech = !showTech">
-        <span class="tech-toggle-switch"></span> Show technical
-      </button>
     </div>
-    <table class="tracks-table" :class="{ 'hide-tech': !showTech }">
+    <table class="tracks-table">
       <thead>
         <tr>
           <th class="col-num">#</th>
@@ -99,7 +92,7 @@
 
       <div>
         <div class="flabel">Preset</div>
-        <div class="preset-wrap">
+        <div class="preset-wrap" @click.outside="presetOpen = false">
           <button type="button" class="preset" id="tc_preset_btn" :class="{ open: presetOpen }" @click="presetOpen = !presetOpen">
             <span class="pv" x-text="presetLabel"></span><span class="pk">&#9662;</span>
           </button>
@@ -129,12 +122,6 @@
       </div>
 
       <p class="dock-result" id="tc_result" :class="resultOk ? 'ok' : 'err'" x-show="resultText" x-text="resultText"></p>
-      <button type="button"
-              class="btn-reindex-dock"
-              id="tc_reindex_btn"
-              x-show="resultOk"
-              x-cloak
-              @click="reindex()">&#8635; Re-index Library</button>
 
       <p class="dock-error" id="tc_error" x-show="error" x-text="error"></p>
     </div>

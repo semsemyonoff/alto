@@ -120,6 +120,15 @@ type jobEvent struct {
 	Pct    float64   `json:"pct"`
 	Title  string    `json:"title"`
 	Sub    string    `json:"sub"`
+	// Dir is the absolute source directory (same resolution the transcode dock
+	// posts), so the dock can tell whether its album already has an active job
+	// and disable START. Empty on `remove` events.
+	Dir string `json:"dir,omitempty"`
+	// Removed marks a job that has been dropped from the queue list (via
+	// remove); it is delivered as a distinct `remove` SSE event rather than an
+	// `update` so the queue UI can drop the row. Never set on snapshot/update
+	// events.
+	Removed bool `json:"removed,omitempty"`
 }
 
 // jobManager tracks all active and recently completed transcoding jobs and
@@ -165,6 +174,7 @@ func (jm *jobManager) eventForLocked(js *jobState) jobEvent {
 		Pct:    calcJobPercent(js),
 		Title:  js.title,
 		Sub:    js.sub,
+		Dir:    js.dirPath,
 	}
 }
 
@@ -462,6 +472,44 @@ func (jm *jobManager) cancel(id string) cancelResult {
 		jm.mu.Unlock()
 		return cancelResultFinished
 	}
+}
+
+// removeResult is the outcome of a remove(id) call.
+type removeResult int
+
+const (
+	removeResultRemoved removeResult = iota
+	removeResultNotFound
+	removeResultActive
+)
+
+// remove drops a terminal (done/failed/canceled) job from the jobs map and the
+// order list immediately, instead of waiting for its 30-minute eviction, and
+// broadcasts a `remove` event so connected queue panels drop the row. A queued
+// or running job is left untouched and reported as removeResultActive (it must
+// be canceled first); an unknown id reports removeResultNotFound. Removing a
+// job whose eviction timer is still pending is safe — the later AfterFunc just
+// finds nothing to delete.
+func (jm *jobManager) remove(id string) removeResult {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	js, ok := jm.jobs[id]
+	if !ok {
+		return removeResultNotFound
+	}
+	switch js.status {
+	case JobStatusQueued, JobStatusRunning:
+		return removeResultActive
+	}
+	delete(jm.jobs, id)
+	for i, oid := range jm.order {
+		if oid == id {
+			jm.order = append(jm.order[:i], jm.order[i+1:]...)
+			break
+		}
+	}
+	jm.broadcastEventLocked(jobEvent{ID: id, Removed: true})
+	return removeResultRemoved
 }
 
 // scheduleEviction removes id from both jobs and order 30 minutes after it

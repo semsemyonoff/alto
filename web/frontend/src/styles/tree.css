@@ -166,28 +166,15 @@
   cursor: default;
 }
 
-.tree-actions {
-  display: none;
-  gap: 4px;
-  align-items: center;
-  flex-shrink: 0;
-}
-
-.tree-node-row:hover .tree-actions {
-  display: flex;
-}
-
-.tree-open-link {
-  font-size: 11px;
-  color: var(--ink-mute);
-  padding: 2px 5px;
-  border-radius: 4px;
+/* The audio-directory label is a real <a href> so the browser treats it as a
+   link (middle-click / ⌘-click opens the album in a new tab); htmx handles the
+   plain left-click as an in-page swap. Keep it looking like tree text, not a
+   default blue underlined anchor. */
+a.tree-label-link,
+a.tree-label-link:hover {
+  color: inherit;
   text-decoration: none;
-}
-
-.tree-open-link:hover {
-  color: var(--cyan);
-  background: rgba(0, 0, 0, 0.25);
+  cursor: pointer;
 }
 
 .tree-children {

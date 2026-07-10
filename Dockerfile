@@ -19,7 +19,15 @@ RUN go mod download
 
 COPY . .
 COPY --from=frontend /build/web/static/dist /build/web/static/dist
-RUN CGO_ENABLED=0 GOOS=linux go build -o /alto ./cmd/alto
+
+# Release version, injected at build time from the release tag by build.sh
+# (--build-arg APP_VERSION=…). Defaults to the dev sentinel for a plain
+# `docker build`. Baked into the binary via -ldflags; the binary also honors an
+# APP_VERSION env var at runtime, mirroring the beetDeck backend.
+ARG APP_VERSION=0.0.0
+RUN CGO_ENABLED=0 GOOS=linux go build \
+    -ldflags "-X github.com/semsemyonoff/ALTO/internal/version.Version=${APP_VERSION}" \
+    -o /alto ./cmd/alto
 
 # Stage 3: Runtime
 FROM alpine:3.21

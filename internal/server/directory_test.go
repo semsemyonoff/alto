@@ -477,10 +477,10 @@ func TestHandleDirPage_RealTemplates_NoCollisionWithIndex(t *testing.T) {
 
 // --- Task 16: stage rebuild — aggregates, codec pill, tech toggle ---
 
-// TestHandleDirPage_RealTemplates_StageAggregatesAndToggle verifies the
-// rebuilt stage renders the total duration/size subline, a large codec pill,
-// and the Alpine "show technical" toggle wired to the tech-flagged columns.
-func TestHandleDirPage_RealTemplates_StageAggregatesAndToggle(t *testing.T) {
+// TestHandleDirPage_RealTemplates_StageAggregatesAndAlwaysShowsTech verifies the
+// rebuilt stage renders the total duration/size subline, a large codec pill, and
+// the technical columns unconditionally (the show-technical toggle was removed).
+func TestHandleDirPage_RealTemplates_StageAggregatesAndAlwaysShowsTech(t *testing.T) {
 	srv, database, libDir := newTestServerWithRealTemplates(t)
 	libID := srv.cfg.Libraries[0].ID
 
@@ -515,17 +515,16 @@ func TestHandleDirPage_RealTemplates_StageAggregatesAndToggle(t *testing.T) {
 	if !strings.Contains(body, fmtSize(63_504_000)) {
 		t.Errorf("stage subline should show the total size; got:\n%s", body)
 	}
-	if !strings.Contains(body, `x-data="{ showTech: false }"`) {
-		t.Errorf("tracks section should be an Alpine island toggling technical columns; got:\n%s", body)
+	// The show-technical toggle was removed: no Alpine toggle island, no
+	// hide-tech binding — the technical columns are always visible.
+	if strings.Contains(body, "showTech") || strings.Contains(body, "tech-toggle") || strings.Contains(body, "hide-tech") {
+		t.Errorf("show-technical toggle should be gone; got:\n%s", body)
 	}
-	if !strings.Contains(body, `class="tech-toggle"`) {
-		t.Errorf("stage should render the show-technical toggle control; got:\n%s", body)
-	}
-	if !strings.Contains(body, `:class="{ 'hide-tech': !showTech }"`) {
-		t.Errorf("tracks table should bind hide-tech to the toggle state; got:\n%s", body)
-	}
-	if !strings.Contains(body, `class="col-bitrate tech"`) {
-		t.Errorf("bitrate column should be flagged technical; got:\n%s", body)
+	// The technical columns themselves are always rendered.
+	for _, header := range []string{"Bitrate", "Sample Rate", "Ch"} {
+		if !strings.Contains(body, ">"+header+"<") {
+			t.Errorf("technical column %q should always be shown; got:\n%s", header, body)
+		}
 	}
 }
 

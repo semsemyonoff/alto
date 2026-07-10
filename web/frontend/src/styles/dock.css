@@ -2,12 +2,16 @@
   display: flex;
   align-items: flex-start;
   gap: 26px;
+  /* Override the legacy style.css cap so the stage+dock span the full content
+     width, letting the dock sit at the right edge and the table use the space. */
+  max-width: none;
 }
 
+/* The stage grows to fill all width left of the dock, so the tracks table is as
+   wide as the screen allows and the transcode dock stays pinned to the right. */
 .dir-stage {
   flex: 1;
   min-width: 0;
-  max-width: 1100px;
 }
 
 .dock {

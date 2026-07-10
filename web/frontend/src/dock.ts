@@ -9,7 +9,8 @@
  */
 
 export type Codec = 'flac' | 'opus'
-export type OutputMode = 'shared' | 'local' | 'replace'
+/** '' means the user has not yet chosen an output destination. */
+export type OutputMode = '' | 'shared' | 'local' | 'replace'
 
 export interface Preset {
   name: string
@@ -64,16 +65,34 @@ export function buildTranscodeRequestBody(input: TranscodeRequestInput): Transco
   }
 }
 
-/** Reports whether the dock's START control should be enabled. */
-export function canStartTranscode(canTranscode: boolean, trackCount: number, starting: boolean): boolean {
-  return canTranscode && trackCount > 0 && !starting
+/**
+ * Reports whether the dock's START control should be enabled. START requires a
+ * transcodable directory with tracks, an explicitly chosen output destination,
+ * no in-flight start, and no active (queued/running) job already for this album.
+ */
+export function canStartTranscode(
+  canTranscode: boolean,
+  trackCount: number,
+  starting: boolean,
+  outputMode: OutputMode,
+  activeInQueue: boolean,
+): boolean {
+  return canTranscode && trackCount > 0 && !starting && outputMode !== '' && !activeInQueue
 }
 
 /** The status line shown under START — a disabled reason, or the track count when ready. */
-export function startStatusText(canTranscode: boolean, trackCount: number, starting: boolean): string {
+export function startStatusText(
+  canTranscode: boolean,
+  trackCount: number,
+  starting: boolean,
+  outputMode: OutputMode,
+  activeInQueue: boolean,
+): string {
+  if (activeInQueue) return 'Already in the queue'
   if (starting) return 'Starting…'
   if (trackCount <= 0) return 'No tracks to transcode'
   if (!canTranscode) return 'Lossless-only — this directory has lossy tracks'
+  if (outputMode === '') return 'Choose an output destination'
   return `${trackCount} track${trackCount === 1 ? '' : 's'}`
 }
 
@@ -114,6 +133,7 @@ interface DockData {
   resultOk: boolean
   init(): void
   readonly presetLabel: string
+  readonly activeInQueue: boolean
   readonly canStart: boolean
   readonly statusText: string
   setCodec(codec: Codec): void
@@ -130,7 +150,10 @@ export function altoDock(): DockData {
     presets: [],
     preset: '',
     presetOpen: false,
-    outputMode: 'shared',
+    // No pre-selected destination: the user must choose one, which also keeps
+    // every mode button a real toggle (clicking the would-be default is no
+    // longer a no-op) and gates START until a destination is picked.
+    outputMode: '',
     starting: false,
     error: '',
     path: '',
@@ -155,11 +178,17 @@ export function altoDock(): DockData {
     get presetLabel(): string {
       return this.presets.find((p) => p.name === this.preset)?.label ?? this.preset
     },
+    // Whether this album already has a queued/running job, read from the shared
+    // `jobs` store the queue panel keeps in sync.
+    get activeInQueue(): boolean {
+      const store = (this as unknown as { $store?: { jobs?: { isActive(dir: string): boolean } } }).$store
+      return store?.jobs?.isActive(this.path) ?? false
+    },
     get canStart(): boolean {
-      return canStartTranscode(this.canTranscode, this.trackCount, this.starting)
+      return canStartTranscode(this.canTranscode, this.trackCount, this.starting, this.outputMode, this.activeInQueue)
     },
     get statusText(): string {
-      return startStatusText(this.canTranscode, this.trackCount, this.starting)
+      return startStatusText(this.canTranscode, this.trackCount, this.starting, this.outputMode, this.activeInQueue)
     },
 
     setCodec(codec: Codec) {

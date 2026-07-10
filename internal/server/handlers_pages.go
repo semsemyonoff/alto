@@ -19,6 +19,7 @@ import (
 
 	"github.com/semsemyonoff/ALTO/internal/db"
 	"github.com/semsemyonoff/ALTO/internal/transcode"
+	"github.com/semsemyonoff/ALTO/internal/version"
 )
 
 // sharedTemplateFiles are partials included (if present) alongside every
@@ -167,29 +168,20 @@ var treeNodeTmpl = template.Must(template.New("tree_node").Parse(`<div class="tr
        {{if .HasChildren}}hx-get="/api/tree/{{.LibraryID}}/children?parent={{.Path | urlquery}}"
        hx-target="next .tree-children"
        hx-swap="innerHTML"
-       hx-trigger="click[!event.target.closest('.tree-label-link,.tree-actions')]"
-       onclick="if(!event.target.closest('.tree-label-link,.tree-actions')){var children=this.nextElementSibling; var expanded=this.classList.toggle('expanded'); if(children){children.hidden=!expanded}}"{{end}}
+       hx-trigger="click[!event.target.closest('.tree-label-link')]"
+       onclick="if(!event.target.closest('.tree-label-link')){var children=this.nextElementSibling; var expanded=this.classList.toggle('expanded'); if(children){children.hidden=!expanded}}"{{end}}
        title="{{.Path}}">
     {{if .HasChildren}}<span class="tree-toggle">▶</span>{{else}}<span class="tree-toggle-placeholder"></span>{{end}}
     <span class="tree-icon">{{if .HasCover}}🎵{{else}}📁{{end}}</span>
-    {{if .IsAudioDir}}<span class="tree-label tree-label-link"
+    {{if .IsAudioDir}}<a class="tree-label tree-label-link"
+          href="/dir?path={{.AbsPath | urlquery}}"
           hx-get="/dir?path={{.AbsPath | urlquery}}"
           hx-target="#content-area"
           hx-select="#dir-content"
           hx-swap="innerHTML"
           hx-push-url="true"
-          onclick="event.stopPropagation(); document.querySelectorAll('.tree-node-row').forEach(function(el){el.classList.remove('active')}); this.closest('.tree-node-row').classList.add('active')">{{.Basename}}</span>{{else}}<span class="tree-label tree-label-disabled">{{.Basename}}</span>{{end}}
+          hx-trigger="altonav">{{.Basename}}</a>{{else}}<span class="tree-label tree-label-disabled">{{.Basename}}</span>{{end}}
     {{if .CodecSummary}}<span class="codec-badge {{.CodecClass}}">{{.CodecSummary}}</span>{{end}}
-    <span class="tree-actions">
-      {{if .IsAudioDir}}
-      <a class="tree-open-link"
-         href="/dir?path={{.AbsPath | urlquery}}"
-         target="_blank"
-         rel="noopener"
-         onclick="event.stopPropagation()"
-         title="Open in new tab">↗</a>
-      {{end}}
-    </span>
   </div>
   <div class="tree-children"{{if .HasChildren}} hidden{{end}}></div>
 </div>
@@ -303,13 +295,14 @@ var searchResultTmpl = template.Must(template.New("search_result").Parse(`<div c
   <div class="tree-node-row" title="{{.Path}}">
     <span class="tree-toggle-placeholder"></span>
     <span class="tree-icon">{{if .HasCover}}🎵{{else}}📁{{end}}</span>
-    {{if .IsAudioDir}}<span class="tree-label tree-label-link"
+    {{if .IsAudioDir}}<a class="tree-label tree-label-link"
+          href="/dir?path={{.AbsPath | urlquery}}"
           hx-get="/dir?path={{.AbsPath | urlquery}}"
           hx-target="#content-area"
           hx-select="#dir-content"
           hx-swap="innerHTML"
           hx-push-url="true"
-          onclick="event.stopPropagation(); document.querySelectorAll('.tree-node-row').forEach(function(el){el.classList.remove('active')}); this.closest('.tree-node-row').classList.add('active')">{{.BasenameHTML}}</span>{{else}}<span class="tree-label tree-label-disabled">{{.BasenameHTML}}</span>{{end}}
+          hx-trigger="altonav">{{.BasenameHTML}}</a>{{else}}<span class="tree-label tree-label-disabled">{{.BasenameHTML}}</span>{{end}}
     {{if .CodecSummary}}<span class="codec-badge {{.CodecClass}}">{{.CodecSummary}}</span>{{end}}
   </div>
 </div>
@@ -370,6 +363,8 @@ type appShellData struct {
 	SelectedTrackCount int
 	Notice             string
 	TopDirsHTML        template.HTML // pre-rendered tree node HTML
+	Version            string        // display version for the header badge (e.g. "v2.4.1" or "dev")
+	FFmpegVersion      string        // detected ffmpeg version for the header badge (empty if unavailable)
 }
 
 // dirPageData is the template data for the audio directory detail page.
@@ -541,8 +536,10 @@ func (s *Server) buildAppShellData(selectedID int64) (appShellData, error) {
 	}
 
 	data := appShellData{
-		Libraries:  libs,
-		SelectedID: selectedID,
+		Libraries:     libs,
+		SelectedID:    selectedID,
+		Version:       version.Display(),
+		FFmpegVersion: s.cfg.FFmpegVersion,
 	}
 	if len(libs) == 0 {
 		return data, nil

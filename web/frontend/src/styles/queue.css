@@ -263,7 +263,8 @@
   color: var(--danger);
 }
 
-.q-cancel {
+.q-cancel,
+.q-remove {
   justify-self: center;
   color: var(--ink-mute);
   font-size: 15px;
@@ -274,20 +275,9 @@
   padding: 2px;
 }
 
-.q-cancel:hover {
+.q-cancel:hover,
+.q-remove:hover {
   color: var(--danger);
-}
-
-.q-chev {
-  justify-self: center;
-  color: var(--ink-mute);
-  font-size: 10px;
-  transition: 0.2s;
-}
-
-.q-item.open .q-chev {
-  transform: rotate(180deg);
-  color: var(--teal);
 }
 
 .q-logs {
@@ -298,8 +288,47 @@
 }
 
 .q-item.open .q-logs {
-  max-height: 232px;
+  max-height: 272px;
   border-top: 1px solid var(--hair-strong);
+}
+
+.q-logs-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 20px 0 44px;
+}
+
+.q-chev-hint {
+  font-family: var(--fm);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-mute);
+}
+
+.q-follow {
+  font-family: var(--fm);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  color: var(--ink-mute);
+  border: 1px solid var(--hair-strong);
+  border-radius: 999px;
+  padding: 3px 10px;
+  background: rgba(0, 0, 0, 0.25);
+  cursor: pointer;
+  transition: 0.15s;
+}
+
+.q-follow:hover {
+  color: var(--ink-dim);
+  border-color: rgba(58, 212, 196, 0.35);
+}
+
+.q-follow.on {
+  color: var(--teal);
+  border-color: rgba(58, 212, 196, 0.5);
+  background: rgba(58, 212, 196, 0.08);
 }
 
 .q-logs .inner {

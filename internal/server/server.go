@@ -34,12 +34,13 @@ type LibraryConfig struct {
 
 // Config is the server configuration.
 type Config struct {
-	Libraries   []LibraryConfig
-	OutputDir   string
-	CacheDir    string
-	TemplateDir string // defaults to "web/templates"
-	StaticDir   string // defaults to "web/static"
-	Workers     int    // transcode worker pool size; defaults to 1
+	Libraries     []LibraryConfig
+	OutputDir     string
+	CacheDir      string
+	TemplateDir   string // defaults to "web/templates"
+	StaticDir     string // defaults to "web/static"
+	Workers       int    // transcode worker pool size; defaults to 1
+	FFmpegVersion string // detected at startup (transcode.FFmpegVersion); shown in the header
 }
 
 // ScanEvent represents a scan lifecycle event broadcast over SSE.
@@ -294,6 +295,8 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /api/jobs", s.handleJobs)
 	s.mux.HandleFunc("GET /api/jobs/events", s.handleJobEvents)
 	s.mux.HandleFunc("POST /api/jobs/{id}/cancel", s.handleJobCancel)
+	s.mux.HandleFunc("POST /api/jobs/{id}/remove", s.handleJobRemove)
+	s.mux.HandleFunc("GET /api/version", s.handleVersion)
 	s.mux.HandleFunc("POST /api/transcode", s.handleTranscodeStart)
 	s.mux.HandleFunc("GET /api/transcode/{jobID}/log", s.handleTranscodeLog)
 	s.mux.HandleFunc("GET /{path...}", s.handleNotFoundPage)

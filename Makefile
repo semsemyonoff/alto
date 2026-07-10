@@ -2,6 +2,13 @@ BINARY := alto
 CMD := ./cmd/alto
 FRONTEND_DIR := web/frontend
 
+# Release version baked into the binary. Defaults to `git describe` (leading "v"
+# stripped) so local builds carry a real version; falls back to the dev sentinel.
+# Override with `make build ALTO_VERSION=2.4.1`.
+ALTO_VERSION ?= $(patsubst v%,%,$(shell git describe --tags --always --dirty 2>/dev/null))
+VERSION_PKG := github.com/semsemyonoff/ALTO/internal/version
+LDFLAGS := -X $(VERSION_PKG).Version=$(if $(ALTO_VERSION),$(ALTO_VERSION),0.0.0)
+
 # Docker image name and tag
 ALTO_IMAGE ?= semsemyonoff/alto
 ALTO_TAG ?= latest
@@ -16,7 +23,7 @@ frontend-build:
 	cd $(FRONTEND_DIR) && npm ci && npm run build
 
 build: frontend-build
-	go build -o $(BINARY) $(CMD)
+	go build -ldflags "$(LDFLAGS)" -o $(BINARY) $(CMD)
 
 test:
 	go test ./...

@@ -1541,9 +1541,13 @@ func TestHandleIndex_OpenInNewTabLinks(t *testing.T) {
 	}
 	body := w.Body.String()
 
-	// "Open in new tab" links should be present with target=_blank.
-	if !strings.Contains(body, `target="_blank"`) {
-		t.Errorf("index page should contain open-in-new-tab links; got:\n%s", body)
+	// Audio-directory labels are real <a href> links so the browser can open
+	// them in a new tab (⌘/middle-click); htmx handles the plain click.
+	if !strings.Contains(body, `<a class="tree-label tree-label-link"`) {
+		t.Errorf("index page tree labels should be anchor links; got:\n%s", body)
+	}
+	if !strings.Contains(body, `href="/dir?path=`) {
+		t.Errorf("tree label anchors should carry a real href to the directory page; got:\n%s", body)
 	}
 }
 

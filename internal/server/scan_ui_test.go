@@ -148,9 +148,10 @@ func TestScanUI_DirectoryPageHasLibraryID(t *testing.T) {
 	}
 }
 
-// TestScanUI_ReindexOfferRendered verifies the Re-index Library button is present
-// in a directory page with tracks (it is hidden initially, shown after transcode completes).
-func TestScanUI_ReindexOfferRendered(t *testing.T) {
+// TestScanUI_ReindexLivesOnlyInTopbar verifies the transcode dock no longer
+// carries its own Re-index button (removed); re-indexing is offered only by the
+// top-bar control.
+func TestScanUI_ReindexLivesOnlyInTopbar(t *testing.T) {
 	srv, database, libDir := newTestServerWithRealTemplates(t)
 	libID := srv.cfg.Libraries[0].ID
 
@@ -174,11 +175,12 @@ func TestScanUI_ReindexOfferRendered(t *testing.T) {
 	}
 	body := w.Body.String()
 
-	if !strings.Contains(body, "tc_reindex_btn") {
-		t.Error("directory page should contain tc_reindex_btn element for post-transcode re-index offer")
+	if strings.Contains(body, "tc_reindex_btn") {
+		t.Error("transcode dock should no longer render its own Re-index button")
 	}
-	if !strings.Contains(body, `@click="reindex()"`) {
-		t.Error("directory page should wire the re-index button to the dock's reindex() method")
+	// The top-bar Re-index control remains the single re-index entry point.
+	if !strings.Contains(body, `id="scan-btn"`) {
+		t.Error("directory page should still expose the top-bar Re-index control (scan-btn)")
 	}
 }
 

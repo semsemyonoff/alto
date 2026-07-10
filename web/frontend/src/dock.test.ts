@@ -83,42 +83,58 @@ describe('buildTranscodeRequestBody', () => {
 })
 
 describe('canStartTranscode', () => {
-  it('is true when transcodable, has tracks, and not already starting', () => {
-    expect(canStartTranscode(true, 12, false)).toBe(true)
+  it('is true when transcodable, has tracks, a destination, not starting, not queued', () => {
+    expect(canStartTranscode(true, 12, false, 'shared', false)).toBe(true)
+  })
+
+  it('is false until an output destination is chosen', () => {
+    expect(canStartTranscode(true, 12, false, '', false)).toBe(false)
+  })
+
+  it('is false when this album already has an active job', () => {
+    expect(canStartTranscode(true, 12, false, 'shared', true)).toBe(false)
   })
 
   it('is false when not transcodable (lossy source)', () => {
-    expect(canStartTranscode(false, 12, false)).toBe(false)
+    expect(canStartTranscode(false, 12, false, 'shared', false)).toBe(false)
   })
 
   it('is false with zero tracks', () => {
-    expect(canStartTranscode(true, 0, false)).toBe(false)
+    expect(canStartTranscode(true, 0, false, 'shared', false)).toBe(false)
   })
 
   it('is false while already starting', () => {
-    expect(canStartTranscode(true, 12, true)).toBe(false)
+    expect(canStartTranscode(true, 12, true, 'shared', false)).toBe(false)
   })
 })
 
 describe('startStatusText', () => {
+  it('reports that the album is already queued', () => {
+    expect(startStatusText(true, 12, false, 'shared', true)).toBe('Already in the queue')
+  })
+
+  it('prompts to choose a destination when none is selected', () => {
+    expect(startStatusText(true, 12, false, '', false)).toBe('Choose an output destination')
+  })
+
   it('reports the disabled reason for a lossy directory', () => {
-    expect(startStatusText(false, 12, false)).toBe('Lossless-only — this directory has lossy tracks')
+    expect(startStatusText(false, 12, false, '', false)).toBe('Lossless-only — this directory has lossy tracks')
   })
 
   it('reports starting while a request is in flight', () => {
-    expect(startStatusText(true, 12, true)).toBe('Starting…')
+    expect(startStatusText(true, 12, true, 'shared', false)).toBe('Starting…')
   })
 
   it('reports the track count when ready', () => {
-    expect(startStatusText(true, 12, false)).toBe('12 tracks')
+    expect(startStatusText(true, 12, false, 'shared', false)).toBe('12 tracks')
   })
 
   it('uses singular phrasing for one track', () => {
-    expect(startStatusText(true, 1, false)).toBe('1 track')
+    expect(startStatusText(true, 1, false, 'local', false)).toBe('1 track')
   })
 
   it('reports no tracks when the directory is empty', () => {
-    expect(startStatusText(true, 0, false)).toBe('No tracks to transcode')
+    expect(startStatusText(true, 0, false, 'shared', false)).toBe('No tracks to transcode')
   })
 })
 
@@ -171,11 +187,20 @@ describe('altoDock', () => {
     return dock
   }
 
-  it('initializes with the FLAC codec and its default preset selected', () => {
+  it('initializes with the FLAC codec and its default preset, but no output destination', () => {
     const dock = initDock()
     expect(dock.codec).toBe('flac')
     expect(dock.preset).toBe('Balanced')
     expect(dock.presetLabel).toBe('Balanced (compression 5)')
+    // No destination chosen yet: START stays disabled until the user picks one.
+    expect(dock.outputMode).toBe('')
+    expect(dock.canStart).toBe(false)
+    expect(dock.statusText).toBe('Choose an output destination')
+  })
+
+  it('enables START once an output destination is chosen', () => {
+    const dock = initDock()
+    dock.outputMode = 'shared'
     expect(dock.canStart).toBe(true)
     expect(dock.statusText).toBe('7 tracks')
   })

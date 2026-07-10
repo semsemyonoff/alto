@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/semsemyonoff/ALTO/internal/db"
 	"github.com/semsemyonoff/ALTO/internal/library"
@@ -187,11 +188,23 @@ func main() {
 	})
 	engine := transcode.NewEngine()
 
+	// Detect the ffmpeg version once at startup (ffmpeg is ALTO's core tool) so
+	// the UI can display it. A failure here is non-fatal — the badge is simply
+	// omitted.
+	ffmpegVersion := ""
+	if v, err := detectFFmpegVersion(); err != nil {
+		slog.Warn("ffmpeg version detection failed", "err", err)
+	} else {
+		ffmpegVersion = v
+		slog.Info("ffmpeg detected", "version", v)
+	}
+
 	srvCfg := server.Config{
-		Libraries: libCfgs,
-		OutputDir: cfg.OutputDir,
-		CacheDir:  cfg.CacheDir,
-		Workers:   cfg.Workers,
+		Libraries:     libCfgs,
+		OutputDir:     cfg.OutputDir,
+		CacheDir:      cfg.CacheDir,
+		Workers:       cfg.Workers,
+		FFmpegVersion: ffmpegVersion,
 	}
 	srv := server.NewWithEngine(database, scanner, engine, srvCfg)
 
@@ -226,4 +239,13 @@ func main() {
 		slog.Error("server error", "err", err)
 		os.Exit(1)
 	}
+}
+
+// detectFFmpegVersion runs `ffmpeg -version` under a short timeout and returns
+// the reported version token. ffmpeg is ALTO's core tool; the result is shown
+// in the UI header.
+func detectFFmpegVersion() (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return transcode.FFmpegVersion(ctx)
 }

@@ -211,10 +211,15 @@ func (s *Server) handleJobEvents(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// writeJobEvent writes a single "update" SSE event for a jobEvent.
+// writeJobEvent writes a single SSE event for a jobEvent: a `remove` event when
+// the job has been dropped from the queue, otherwise an `update` event.
 func writeJobEvent(w http.ResponseWriter, ev jobEvent) {
 	data, _ := json.Marshal(ev)
-	_, _ = fmt.Fprintf(w, "event: update\ndata: %s\n\n", data)
+	name := "update"
+	if ev.Removed {
+		name = "remove"
+	}
+	_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", name, data)
 }
 
 // handleJobCancel cancels a queued or running job.
@@ -233,6 +238,27 @@ func (s *Server) handleJobCancel(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "job not found", http.StatusNotFound)
 	case cancelResultFinished:
 		http.Error(w, "job already finished", http.StatusConflict)
+	}
+}
+
+// handleJobRemove removes a terminal (done/failed/canceled) job from the queue
+// list immediately, rather than waiting for its 30-minute eviction. Queued or
+// running jobs must be canceled first and are rejected with 409.
+// POST /api/jobs/{id}/remove
+func (s *Server) handleJobRemove(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		http.Error(w, "job ID required", http.StatusBadRequest)
+		return
+	}
+
+	switch s.jobs.remove(id) {
+	case removeResultRemoved:
+		writeJSON(w, http.StatusAccepted, map[string]string{"status": "removed"})
+	case removeResultNotFound:
+		http.Error(w, "job not found", http.StatusNotFound)
+	case removeResultActive:
+		http.Error(w, "cancel the job before removing it", http.StatusConflict)
 	}
 }
 
