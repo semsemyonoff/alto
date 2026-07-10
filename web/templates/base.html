@@ -80,9 +80,9 @@
 
   <section class="queue" id="queue" x-data="altoQueue()" :class="{ collapsed: collapsed }"
            x-effect="document.body.classList.toggle('queue-open', !collapsed)">
-    <div class="q-head">
+    <div class="q-head" @click="toggleCollapse()">
       <div class="qt">Queue <span class="bub" x-text="bubble"></span></div>
-      <button type="button" class="collapse" @click="toggleCollapse()">
+      <button type="button" class="collapse" @click.stop="toggleCollapse()">
         <span x-text="collapsed ? 'expand' : 'collapse'"></span> <span class="ca">&#9662;</span>
       </button>
     </div>

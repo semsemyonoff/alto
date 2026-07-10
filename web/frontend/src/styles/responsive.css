@@ -238,6 +238,37 @@
     min-height: 0;
     overflow: auto;
   }
+
+  /* The queue becomes a fixed bottom status strip spanning the viewport width
+     (mirrors prototype line 315). It already collapses via Alpine `collapsed`;
+     tapping anywhere on the header expands it (base.html @click). z-index 48
+     sits below the scrim (60) so an open drawer/sheet dims it. */
+  .queue {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 48;
+    box-shadow: 0 -12px 30px -14px #000;
+  }
+
+  /* Whole header is the tap target now — give it a comfortable hit area. */
+  .q-head {
+    cursor: pointer;
+    padding: 13px 18px;
+  }
+
+  /* Cap the expanded list against the viewport so it can't push the FAB off
+     screen (the FAB is hidden while queue-open, but the list is still bounded). */
+  .queue .q-list {
+    max-height: min(46vh, 300px);
+  }
+
+  /* Scroll content clears the fixed queue strip and the floating FAB so the
+     last rows aren't hidden behind them (prototype stage padding-bottom). */
+  .app-content {
+    padding-bottom: 92px;
+  }
 }
 
 /* ---------- mobile (<=639px) ---------- */
