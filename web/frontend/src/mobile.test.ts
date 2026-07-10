@@ -54,6 +54,14 @@ describe('syncSelection', () => {
     syncSelection(makeRoot(false))
     expect(document.body.classList.contains('dock-open')).toBe(false)
   })
+
+  it('leaves dock-open untouched when clearDock is false (non-content swap)', () => {
+    document.body.classList.add('dock-open')
+    syncSelection(makeRoot(true), false)
+    expect(document.body.classList.contains('dock-open')).toBe(true)
+    // has-sel is still recomputed even when the dock is left open
+    expect(document.body.classList.contains('has-sel')).toBe(true)
+  })
 })
 
 describe('initMobileControls', () => {

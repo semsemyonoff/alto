@@ -20,13 +20,17 @@ export function hasSelection(root: ParentNode | null | undefined): boolean {
 }
 
 /**
- * Recompute `body.has-sel` from the presence of `#tc-dock` in `root`, and always
- * clear `body.dock-open` — navigating to a new directory replaces the dock DOM,
- * so any previously-open overlay must not linger as an orphaned body class.
+ * Recompute `body.has-sel` from the presence of `#tc-dock` in `root`. When
+ * `clearDock` is true, also clear `body.dock-open` — navigating to a new
+ * directory replaces the dock DOM, so any previously-open overlay must not
+ * linger as an orphaned body class. Pass `clearDock: false` for htmx swaps that
+ * do *not* replace the content area (e.g. a `#tree-root` refresh from a library
+ * switch, tree search, or post-scan reload), which would otherwise slam an open
+ * dock shut even though its DOM was untouched.
  */
-export function syncSelection(root: ParentNode | null | undefined): void {
+export function syncSelection(root: ParentNode | null | undefined, clearDock = true): void {
   document.body.classList.toggle('has-sel', hasSelection(root))
-  document.body.classList.remove('dock-open')
+  if (clearDock) document.body.classList.remove('dock-open')
 }
 
 /**

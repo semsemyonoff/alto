@@ -68,8 +68,16 @@ document.addEventListener('click', (event) => {
 })
 
 document.addEventListener('htmx:afterSwap', (event) => {
-  reinitAlpineOnSwap(Alpine, (event as CustomEvent<{ target: EventTarget }>).detail.target)
-  syncSelection(document.getElementById('content-area'))
+  const swapTarget = (event as CustomEvent<{ target: EventTarget }>).detail.target
+  reinitAlpineOnSwap(Alpine, swapTarget)
+  // Only a content-area swap replaces the dock DOM and warrants closing an open
+  // overlay. Other swaps (e.g. a `#tree-root` refresh from a library switch,
+  // tree search, or post-scan reload) leave the dock in place, so recompute
+  // has-sel but don't clear dock-open — otherwise a background scan completing
+  // would slam the user's open transcode dock shut.
+  const el = swapTarget as HTMLElement | null
+  const isContentSwap = el?.id === 'content-area' || !!el?.closest?.('#content-area')
+  syncSelection(document.getElementById('content-area'), isContentSwap)
 })
 
 // Restoring a page from htmx's history cache (back/forward) drops the swapped-in
