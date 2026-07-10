@@ -264,12 +264,6 @@
   .queue .q-list {
     max-height: min(46vh, 300px);
   }
-
-  /* Scroll content clears the fixed queue strip and the floating FAB so the
-     last rows aren't hidden behind them (prototype stage padding-bottom). */
-  .app-content {
-    padding-bottom: 92px;
-  }
 }
 
 /* ---------- tablet-only (640–1023px) ---------- */
@@ -423,9 +417,8 @@
     box-shadow: 0 -24px 60px -20px #000;
   }
 
-  body.dock-open .dock {
-    transform: none;
-  }
+  /* `body.dock-open .dock { transform: none }` from the shared ≤1023 block
+     already reveals the sheet here (higher specificity than this `.dock` rule). */
 
   /* Drop the wood-grain left seam; it reads as a vertical divider. */
   .dock::before {

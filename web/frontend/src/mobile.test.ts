@@ -48,6 +48,12 @@ describe('syncSelection', () => {
     syncSelection(makeRoot(true))
     expect(document.body.classList.contains('dock-open')).toBe(false)
   })
+
+  it('clears a lingering dock-open even when the dock is absent', () => {
+    document.body.classList.add('dock-open')
+    syncSelection(makeRoot(false))
+    expect(document.body.classList.contains('dock-open')).toBe(false)
+  })
 })
 
 describe('initMobileControls', () => {
@@ -98,7 +104,17 @@ describe('initMobileControls', () => {
   })
 
   it('fires when the click lands on a child of the control', () => {
-    click('<button class="m-hamburger"><span>bar</span></button>')
+    // Dispatch on the nested <span>, not the button, so event.target is the child
+    // — this is what exercises the `target.closest('.m-hamburger')` delegation.
+    document.body.innerHTML = '<button class="m-hamburger"><span>bar</span></button>'
+    ;(document.body.querySelector('.m-hamburger span') as HTMLElement).click()
     expect(document.body.classList.contains('tree-open')).toBe(true)
+  })
+
+  it('leaves body classes untouched for a click outside any control', () => {
+    document.body.classList.add('tree-open', 'dock-open')
+    click('<div class="not-a-control"></div>')
+    expect(document.body.classList.contains('tree-open')).toBe(true)
+    expect(document.body.classList.contains('dock-open')).toBe(true)
   })
 })

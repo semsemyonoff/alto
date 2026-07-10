@@ -17,6 +17,7 @@ ALTO is a self-hosted web service for browsing and transcoding audio libraries. 
 - Multi-library selector showing per-library indexed status and track counts
 - Server-side directory tree search
 - Real-time SSE progress for both transcoding and re-indexing
+- Responsive layout for tablet and mobile: the directory tree collapses into a hamburger drawer, the transcode dock becomes a slide-in panel (bottom sheet on phones), and a floating Transcode button opens it
 - SQLite-backed index (WAL mode, concurrent reads)
 - Docker-first deployment
 
