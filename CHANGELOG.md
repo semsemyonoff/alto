@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 <!-- Write notes for the next release here. "Cut release" promotes this
      section to ## [X.Y.Z] - <date> and uses it as the release body. -->
 
+## [0.1.0] - 2026-07-11
+
 Initial release of **ALTO** — a self-hosted web service for browsing and
 transcoding audio libraries.
 
@@ -28,3 +30,4 @@ transcoding audio libraries.
   floating Transcode button).
 - SQLite-backed index (WAL mode, concurrent reads).
 - Version readout surfaced in the UI.
+
