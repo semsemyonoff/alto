@@ -1,0 +1,136 @@
+# "Cut release" — the one button that starts a release. Run it from the Forgejo
+# UI (Actions → Cut release → Run workflow), pick a bump, and it:
+#   1. bumps VERSION (semver: patch/minor/major)
+#   2. promotes the CHANGELOG [Unreleased] section to [X.Y.Z] - <date> (write
+#      your release notes there before cutting — that text is the release body)
+#   3. commits "release: X.Y.Z" and tags vX.Y.Z, then pushes
+#
+# ALTO is a single repo (backend + frontend together), so there are no submodules
+# to repin — the tag ships exactly the current tree.
+#
+# The tag fans out to the build pipelines: .forgejo/workflows/release.yml
+# (git.horn/alto/alto) and, via the push mirror, .github/workflows/release.yml
+# (Docker Hub + GHCR). It MUST run on Forgejo because the mirror is one-way
+# (Forgejo → GitHub), so the tag has to originate here.
+#
+# Required Forgejo Actions secret:
+#   RELEASE_TOKEN  a PAT with write access to this repo. Used to push the commit
+#                  and tag. It must be a PAT (not the automatic Actions token):
+#                  pushes by the auto token do NOT trigger the build workflows.
+name: Cut release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Semver bump"
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+
+jobs:
+  cut:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # PAT so the resulting tag push triggers the build workflows.
+          token: ${{ secrets.RELEASE_TOKEN }}
+
+      - name: Configure git identity
+        run: |
+          git config user.name  "ALTO release bot"
+          git config user.email "release-bot@git.horn"
+
+      - name: Bump VERSION
+        id: ver
+        run: |
+          set -euo pipefail
+          cur="$(cat VERSION 2>/dev/null || echo 0.0.0)"
+          IFS=. read -r MA MI PA <<< "$cur"
+          case "${{ inputs.bump }}" in
+            major) MA=$((MA+1)); MI=0; PA=0 ;;
+            minor) MI=$((MI+1)); PA=0 ;;
+            patch) PA=$((PA+1)) ;;
+          esac
+          new="${MA}.${MI}.${PA}"
+          echo "$new" > VERSION
+          echo "version=$new" >> "$GITHUB_OUTPUT"
+          echo "VERSION: $cur -> $new"
+
+      - name: Promote Unreleased to the new version
+        run: |
+          set -euo pipefail
+          new="${{ steps.ver.outputs.version }}"
+          today="$(date +%Y-%m-%d)"
+
+          grep -q '^## \[Unreleased\]' CHANGELOG.md \
+            || { echo "ERROR: no '## [Unreleased]' heading in CHANGELOG.md" >&2; exit 1; }
+
+          # Release notes = the [Unreleased] body (everything up to the next
+          # version heading), with HTML-comment guidance and edge blank lines
+          # stripped. This text becomes both the new CHANGELOG section and the
+          # Forgejo/GitHub release body.
+          awk '
+            /^## \[Unreleased\]/ {seen=1; next}
+            seen==0 {next}
+            /^## \[/ {exit}
+            /<!--/ {inc=1}
+            inc==1 { if (/-->/) inc=0; next }
+            {print}
+          ' CHANGELOG.md > /tmp/body.md
+          awk 'NF && !s {s=NR} NF {e=NR} {a[NR]=$0} END {if (s) for (i=s; i<=e; i++) print a[i]}' \
+            /tmp/body.md > /tmp/section.md
+          test -s /tmp/section.md \
+            || { echo "ERROR: [Unreleased] is empty — write release notes there before cutting." >&2; exit 1; }
+
+          # Rebuild CHANGELOG: header through the Unreleased heading, a fresh
+          # empty Unreleased, the promoted version, then any older versions.
+          awk '{print} /^## \[Unreleased\]/{exit}' CHANGELOG.md > /tmp/head.md
+          awk '
+            /^## \[Unreleased\]/ {seen=1; next}
+            seen && /^## \[/ {tail=1}
+            tail {print}
+          ' CHANGELOG.md > /tmp/tail.md
+          {
+            cat /tmp/head.md
+            printf '\n<!-- Write notes for the next release here. "Cut release" promotes this\n'
+            printf '     section to ## [X.Y.Z] - <date> and uses it as the release body. -->\n\n'
+            printf '## [%s] - %s\n\n' "$new" "$today"
+            cat /tmp/section.md
+            printf '\n'
+            if [ -s /tmp/tail.md ]; then printf '\n'; cat /tmp/tail.md; fi
+          } > CHANGELOG.md
+          echo "Promoted [Unreleased] -> [$new] - $today"
+
+      - name: Commit, tag, push
+        run: |
+          set -euo pipefail
+          new="${{ steps.ver.outputs.version }}"
+          git add VERSION CHANGELOG.md
+          git commit -m "release: ${new}"
+          git tag -a "v${new}" -m "ALTO ${new}"
+          git push origin "HEAD:${{ github.ref_name }}"
+          git push origin "v${new}"
+          echo "Released v${new} — build pipelines will pick up the tag."
+
+      - name: Create Forgejo release
+        env:
+          TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: |
+          set -euo pipefail
+          new="${{ steps.ver.outputs.version }}"
+          # Body = the promoted [Unreleased] notes (/tmp/section.md).
+          payload="$(jq -n --arg tag "v${new}" --arg name "ALTO ${new}" \
+            --rawfile body /tmp/section.md '{tag_name:$tag, name:$name, body:$body}')"
+          code="$(curl -sS -o /tmp/release.json -w '%{http_code}' \
+            -X POST "${{ github.server_url }}/api/v1/repos/${{ github.repository }}/releases" \
+            -H "Authorization: token ${TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d "${payload}")"
+          echo "Forgejo releases API → HTTP ${code}"
+          case "${code}" in
+            201) echo "Forgejo release v${new} created." ;;
+            *) cat /tmp/release.json >&2; echo "ERROR: Forgejo release create failed" >&2; exit 1 ;;
+          esac

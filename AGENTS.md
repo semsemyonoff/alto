@@ -14,7 +14,7 @@ Use the `Makefile` targets first:
 - `ALTO_LIBRARIES="Music:/path/to/music" make run` starts the app locally (serves the last built frontend bundle, not Vite HMR — use `make dev` for that).
 - `make docker-build` builds a local Docker image as `alto:latest`.
 - `make image-build` builds and pushes a multi-arch image using `build.sh`; defaults are `semsemyonoff/alto:latest` and `linux/amd64,linux/arm64`.
-- `docker compose up -d` runs the checked-in development stack after you update the bind mounts in `docker-compose.yml` for your machine.
+- `docker compose up -d` runs the production/operator stack (`docker-compose.yml`), which pulls a published image and reads `.env` (`cp .env.example .env` first). For a container built from the working tree, use `make docker-build` or `make release-local`. Release plumbing lives in `VERSION`, `CHANGELOG.md`, and the `.forgejo/`/`.github/` workflows — see the README "Releasing" section.
 - Inside `web/frontend`: `npm run build`, `npm run dev`, and `npm run test` (Vitest) drive the frontend directly.
 
 Local development expects Go `1.26.2`, Node.js (for the `web/frontend` Vite/TypeScript toolchain), plus `ffmpeg` and `ffprobe` on `PATH`. Docker is required only for container workflows.

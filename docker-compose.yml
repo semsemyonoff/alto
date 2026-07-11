@@ -1,21 +1,49 @@
+# Production deployment for ALTO — runs the single published image (backend +
+# baked frontend in one container). This is the RUNTIME stack operators use to
+# self-host: it pulls a tagged image from the registry and does NOT build
+# anything (use `make release` / build.sh to build & publish from this repo).
+#
+# Quick start:
+#   cp .env.example .env    # then edit image/tag, port, library paths
+#   docker compose up -d
+#   open http://localhost:${ALTO_HTTP_PORT}
+#
+# The checked-in `.env.example` documents every variable used below.
+
 services:
   alto:
-    image: alto:latest
-    build: .
+    image: "${ALTO_IMAGE:-semsemyonoff/alto}:${ALTO_TAG:-latest}"
+    container_name: alto
+    restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "${ALTO_HTTP_PORT:-8080}:8080"
     environment:
-      ALTO_LIBRARIES: "Music:/music,Lossless:/lossless"
+      # name:path pairs (container-side). Keep in sync with the volumes below.
+      ALTO_LIBRARIES: "${ALTO_LIBRARIES:-Music:/music,Lossless:/lossless}"
       ALTO_PORT: "8080"
+      # Shared /out mode → the /out bind mount below.
       ALTO_OUTPUT_DIR: "/out"
+      # SQLite index + cover-art cache live on the persistent named volume.
       ALTO_DB_PATH: "/data/alto.db"
       ALTO_CACHE_DIR: "/data/cache"
+      ALTO_TRANSCODE_WORKERS: "${ALTO_TRANSCODE_WORKERS:-1}"
+      TZ: "${TZ:-UTC}"
     volumes:
-      - /path/to/your/music:/music:ro # :ro is safe for Shared mode only; Local and Replace modes need :rw
-      - /path/to/your/lossless:/lossless:ro # same as above
-      - /path/to/output:/out
+      # Library sources. `:ro` is safe ONLY for Shared /out mode; the local
+      # .alto-out/ and Replace modes write into the source — drop `:ro` for those.
+      - "${ALTO_MUSIC_DIR:-./music}:/music:ro"
+      - "${ALTO_LOSSLESS_DIR:-./lossless}:/lossless:ro"
+      # Transcode output (Shared /out mode) — bind-mounted so results are
+      # browsable on the host.
+      - "${ALTO_OUTPUT_DIR:-./out}:/out"
+      # Persistent app state — SQLite DB and extracted cover-art cache.
       - alto_data:/data
-    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
 volumes:
   alto_data:

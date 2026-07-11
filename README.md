@@ -1,10 +1,10 @@
 # ALTO — Audio Library Transcode Organizer
 
-![Logo](static/logo.svg)
+<img src="static/logo.svg" alt="ALTO logo" width="200" height="200">
 
 ALTO is a self-hosted web service for browsing and transcoding audio libraries. It provides a directory-tree UI for navigating mounted music collections, indexing audio metadata via ffprobe, and transcoding to FLAC or Opus via ffmpeg with real-time progress streaming.
 
-![ALTO web dashboard](assets/alto-web.png)
+<img src="assets/alto.png" alt="ALTO web dashboard" width="820" style="max-width:100%;">
 
 ## Features
 
@@ -23,38 +23,26 @@ ALTO is a self-hosted web service for browsing and transcoding audio libraries. 
 
 ## Quick Start
 
-Use the published container image in your own `docker-compose.yml`:
-
-```yaml
-services:
-  alto:
-    image: semsemyonoff/alto:latest
-    ports:
-      - "8080:8080"
-    environment:
-      ALTO_LIBRARIES: "Music:/music,Lossless:/lossless"
-      ALTO_PORT: "8080"
-      ALTO_OUTPUT_DIR: "/out"
-      ALTO_DB_PATH: "/data/alto.db"
-      ALTO_CACHE_DIR: "/data/cache"
-    volumes:
-      - /path/to/your/music:/music:ro
-      - /path/to/your/lossless:/lossless:ro
-      - /path/to/output:/out
-      - alto_data:/data
-    restart: unless-stopped
-
-volumes:
-  alto_data:
-```
-
-Start it with:
+ALTO ships as a single Docker image. You need [Docker](https://docs.docker.com/get-docker/)
+with Compose. The repository's [`docker-compose.yml`](docker-compose.yml) pulls a
+published image and is driven entirely by a `.env` file:
 
 ```sh
+cp .env.example .env       # set image/tag, host port, and your library paths
 docker compose up -d
 ```
 
-Then open http://localhost:8080 in your browser.
+Then open **http://localhost:8080** (or whatever `ALTO_HTTP_PORT` you set).
+
+`.env` maps your host directories into the container and lists them in
+`ALTO_LIBRARIES`; see the [Configuration](#configuration) table below and the
+comments in [`.env.example`](.env.example). Your SQLite index and cover-art cache
+persist in the `alto_data` Docker volume, so they survive restarts and upgrades.
+
+> **Read-only mounts** (`:ro`, the default in `docker-compose.yml`) are only safe
+> with **Shared `/out`** output mode. The **Local `.alto-out/`** and **Replace**
+> modes write into the source directory and need a writable library mount — drop
+> the `:ro` for those.
 
 ## Configuration
 
@@ -69,35 +57,36 @@ All configuration is via environment variables.
 | `ALTO_CACHE_DIR` | `./cache` | App-managed cache for extracted cover art — keep separate from library mounts |
 | `ALTO_TRANSCODE_WORKERS` | `1` | Number of concurrent transcode jobs; additional jobs sit `queued` until a worker is free |
 
-## Docker Usage
+## Running It
 
-### docker-compose.yml
+The [`Makefile`](Makefile) wraps the common operator actions (all read `.env`):
 
-```yaml
-services:
-  alto:
-    image: semsemyonoff/alto:latest
-    ports:
-      - "8080:8080"
-    environment:
-      ALTO_LIBRARIES: "Music:/music,Lossless:/lossless"
-      ALTO_PORT: "8080"
-      ALTO_OUTPUT_DIR: "/out"
-      ALTO_DB_PATH: "/data/alto.db"
-      ALTO_CACHE_DIR: "/data/cache"
-    volumes:
-      - /path/to/your/music:/music:ro
-      - /path/to/your/lossless:/lossless:ro
-      - /path/to/output:/out
-      - alto_data:/data
-    restart: unless-stopped
-
-volumes:
-  alto_data:
+```sh
+make up       # start the stack
+make down     # stop and remove it
+make logs     # tail the logs
+make ps       # container status
+make pull     # pull a newer image tag
+make restart  # recreate the stack
 ```
 
-**Read-only mounts** (`:ro`) are only safe when using **Shared `/out`** output mode.
-**Local `.alto-out/`** and **Replace** modes write into the source directory and require a writable library mount (`:rw` or no flag).
+### Choosing an image
+
+`ALTO_IMAGE` / `ALTO_TAG` in `.env` select what runs. Pin `ALTO_TAG` to a release
+(e.g. `0.1.0`) in production; `latest` is fine for trying it out. Available images:
+
+| Registry | Image |
+|---|---|
+| Docker Hub | `semsemyonoff/alto` |
+| GHCR | `ghcr.io/semsemyonoff/alto` |
+
+### Upgrading
+
+Bump `ALTO_TAG` in `.env`, then:
+
+```sh
+make pull && make up
+```
 
 ## Transcoding Presets
 
@@ -137,37 +126,3 @@ Select "Custom" in the preset dropdown to configure manually:
 | Shared /out (default) | Mirrors library path structure under `<ALTO_OUTPUT_DIR>/<library-name>/<relative-path>/`. Non-audio files copied alongside. |
 | Local out | Creates `.alto-out/` subdirectory inside the source audio directory. |
 | Replace | Atomic per-file in-place replacement with rollback. Backup created on same filesystem; restored automatically on failure. Requires confirmation. |
-
-## Local Development
-
-```sh
-# Build binary (also builds the frontend bundle via `frontend-build`)
-make build
-
-# Run locally (requires ALTO_LIBRARIES set)
-ALTO_LIBRARIES="Music:/path/to/music" make run
-
-# Run the Vite dev server + Go server together, with frontend HMR
-ALTO_LIBRARIES="Music:/path/to/music" make dev
-
-# Run tests
-make test
-
-# Lint
-make lint
-
-# Build a local Docker image from the working tree
-make docker-build
-```
-
-Local development requires Go `1.26.2`, Node.js (for the `web/frontend` Vite/TypeScript toolchain), `ffmpeg`, and `ffprobe` on `PATH`. The frontend source lives in `web/frontend` (Vite + TypeScript + Alpine.js + PostCSS); `make frontend-build` runs `npm ci && npm run build` there and writes the bundle to `web/static/dist`.
-
-The checked-in [`docker-compose.yml`](docker-compose.yml) is development-oriented: it builds from the local working tree and expects you to replace the host bind mounts with paths available on your machine.
-
-For multi-arch image publishing during development, use:
-
-```sh
-make image-build
-```
-
-This uses `build.sh` and pushes `${ALTO_IMAGE:-semsemyonoff/alto}:${ALTO_TAG:-latest}` for `${ALTO_PLATFORMS:-linux/amd64,linux/arm64}`.

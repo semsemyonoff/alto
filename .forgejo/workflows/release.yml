@@ -1,0 +1,58 @@
+# Internal release build — runs on the Forgejo runner (miniPC) when a vX.Y.Z tag
+# arrives. Builds the multi-arch image from this repo and pushes it to your own
+# infra: the Forgejo container registry at git.horn/alto/alto.
+#
+# NB: git.horn/alto/alto is the RELEASE image; the heavy dev BASE image lives at
+# git.horn/alto/app — different repo path, no collision.
+#
+# GitHub never sees this file (it only scans .github/workflows). The public
+# registries are handled by .github/workflows/release.yml.
+#
+# Required Forgejo Actions secrets (names must NOT start with FORGEJO_/GITEA_/GITHUB_):
+#   HORN_REGISTRY_USER   user that owns a token with write:package
+#   HORN_REGISTRY_TOKEN  that token
+#
+# Server-side prerequisites on the Forgejo runner's dind:
+#   1. Trust the *.horn CA for git.horn — add `git.horn` to
+#      FORGEJO_RUNNER_DOCKER_CA_HOSTS in the git stack's .env and redeploy.
+#      Otherwise the push fails with x509.
+#   2. Enable the containerd image store (dind started with
+#      `--feature containerd-snapshotter=true`). This lets the *default* builder
+#      multi-arch-build and push through the daemon, which already resolves
+#      git.horn and trusts its CA. The build step below pins ALTO_BUILDER=default
+#      to use this path.
+name: release (git.horn)
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build-push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Derive version from tag
+        id: ver
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-qemu-action@v3
+
+      - name: Log in to git.horn (Forgejo registry)
+        uses: docker/login-action@v3
+        with:
+          registry: git.horn
+          username: ${{ secrets.HORN_REGISTRY_USER }}
+          password: ${{ secrets.HORN_REGISTRY_TOKEN }}
+
+      - name: Build & push (git.horn/alto/alto)
+        env:
+          ALTO_IMAGES: "git.horn/alto/alto"
+          ALTO_TAGS: "${{ steps.ver.outputs.version }} latest"
+          # Build/push through the dind daemon's default builder (containerd
+          # image store enabled on the runner). A docker-container builder would
+          # spawn a nested buildkit that can't resolve the internal git.horn nor
+          # trust its CA. The daemon already has both.
+          ALTO_BUILDER: default
+        run: ./build.sh

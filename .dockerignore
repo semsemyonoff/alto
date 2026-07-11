@@ -1,5 +1,8 @@
 .git
 .ralphex
+.forgejo
+.github
+.env
 node_modules
 web/static/dist
 alto
