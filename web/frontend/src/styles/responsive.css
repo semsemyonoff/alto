@@ -58,6 +58,27 @@
     background: var(--ink-dim);
   }
 
+  /* Drop the app name ("ALTO" + the "Audio Library Transcode Organizer"
+     expansion) on tablet AND mobile — the hamburger + logo already identify the
+     app, and the wordmark crowds the narrower topbar. Version badges (.appver)
+     and the scan status text stay until phone width (see the ≤639 block). */
+  .wordmark {
+    display: none;
+  }
+
+  /* Reindex button collapses to its icon only on tablet AND mobile: zero out the
+     button font so its bare "Re-index" text node vanishes, then restore the icon
+     span's size (proto lines 340–341). */
+  .btn-reindex {
+    font-size: 0;
+    padding: 9px;
+    gap: 0;
+  }
+
+  .btn-reindex .ic {
+    font-size: 16px;
+  }
+
   /* Make the tree header a row so the close button can pin to its right. */
   .tree-section-header {
     display: flex;
@@ -300,9 +321,9 @@
     gap: 9px;
   }
 
-  /* Drop the wordmark, version badges and status text; only the hamburger, logo,
-     library selector and reindex icon fit at phone width (proto line 334). */
-  .wordmark,
+  /* The wordmark is already gone from ≤1023; at phone width also drop the
+     version badges and status text, leaving only the hamburger, logo, library
+     selector and reindex icon (proto line 334). */
   .appver,
   .status {
     display: none;
@@ -326,16 +347,7 @@
     min-width: 200px;
   }
 
-  /* Reindex button collapses to its icon only (proto lines 340–341). */
-  .btn-reindex {
-    font-size: 0;
-    padding: 9px;
-    gap: 0;
-  }
-
-  .btn-reindex .ic {
-    font-size: 16px;
-  }
+  /* (Reindex button already collapses to its icon at ≤1023 — see the shared block.) */
 
   /* ---- directory stage tightens; cover + title scale down (proto 344–350) ---- */
   .app-content {
@@ -397,6 +409,32 @@
 
   .col-filename {
     min-width: 0;
+  }
+
+  /* ---- queue rows reflow so the cancel/remove button stays on-screen ---- */
+  /* The desktop row is a fixed ~538px-wide grid
+     (14px 230px 1fr 64px 88px 22px + gaps), which overflows a 375px viewport and
+     pushes the trailing action button (× cancel on active jobs, × remove on
+     finished ones) off the right edge — hence "no remove button on mobile".
+     Reflow to a flexible row: status dot · name · % · button. The vu meter and
+     the redundant state label are dropped (the dot colour + % already convey
+     status), and the button becomes a comfortable touch target. */
+  .q-row {
+    grid-template-columns: 12px minmax(0, 1fr) auto 30px;
+    gap: 12px;
+    padding: 11px 14px;
+  }
+
+  .q-row .vu,
+  .q-row .q-state {
+    display: none;
+  }
+
+  .q-cancel,
+  .q-remove {
+    justify-self: end;
+    padding: 6px;
+    font-size: 19px;
   }
 
   /* On phones the dock is a bottom-sheet instead of a right drawer: it spans
