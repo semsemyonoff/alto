@@ -2,24 +2,44 @@
 
 <img src="static/logo.svg" alt="ALTO logo" width="200" height="200">
 
-ALTO is a self-hosted web service for browsing and transcoding audio libraries. It provides a directory-tree UI for navigating mounted music collections, indexing audio metadata via ffprobe, and transcoding to FLAC or Opus via ffmpeg with real-time progress streaming.
+ALTO is a self-hosted web UI for **converting your music library to another audio format** — without touching the command line.
+
+Point it at the folders where your music lives, open it in a browser, click through to an album, pick a format, and press Transcode. ffmpeg does the work on the server; you watch the progress bar. Nothing is uploaded anywhere and nothing leaves your machine.
 
 <img src="assets/alto.png" alt="ALTO web dashboard" width="820" style="max-width:100%;">
 
+## What it's for
+
+Typical reasons people run ALTO:
+
+- **Shrink a lossless collection for a phone or a car.** A FLAC library converted to Opus at 160k is roughly a fifth of the size and still transparent to the ear. Keep the originals, put the Opus copy on the device.
+- **Normalize a messy library to one format.** Downloads arrive as a mix of WAV, ALAC, high-bitrate MP3. Convert a directory tree to a single consistent format in one pass.
+- **Re-encode in place, safely.** Replace mode rewrites files where they sit — atomically, one file at a time, with an automatic rollback if ffmpeg fails, so a bad run can't shred your library.
+- **See what's actually in your library.** ALTO probes every file and shows codec, bitrate, sample rate, channels, and duration — so you can find the 320k MP3s hiding among the FLACs before deciding what to convert.
+
 ## Features
 
-- Directory-tree browser with lazy HTMX loading
-- Audio metadata indexing: codec, bitrate, duration, sample rate, channels
-- Cover art display (external files and embedded art extraction)
-- Transcoding to FLAC (lossless) or Opus (lossy) with preset and custom options
-- Three output modes: shared /out, local .alto-out/, or in-place replace with rollback
-- Transcode queue with a bounded worker pool (`ALTO_TRANSCODE_WORKERS`): jobs beyond capacity wait as `queued`, run in order, and can be canceled from a global queue panel present on every screen
-- Multi-library selector showing per-library indexed status and track counts
-- Server-side directory tree search
-- Real-time SSE progress for both transcoding and re-indexing
-- Responsive layout for tablet and mobile: the directory tree collapses into a hamburger drawer, the transcode dock becomes a slide-in panel (bottom sheet on phones), and a floating Transcode button opens it
-- SQLite-backed index (WAL mode, concurrent reads)
-- Docker-first deployment
+### Browsing your library
+
+- Directory-tree browser over any number of mounted libraries, with a library switcher showing per-library track counts and index status.
+- Every audio file is probed with `ffprobe` and indexed into SQLite: codec, bitrate, duration, sample rate, channels — visible per track without opening a player.
+- Cover art is shown for each directory, both from external files (`cover.jpg` and friends) and extracted from embedded tags.
+- Server-side search jumps straight to a directory by name instead of clicking down the tree.
+
+### Transcoding
+
+- **Two output formats**: FLAC (lossless, for archiving) and Opus (lossy, for devices).
+- **Presets** for both, so you don't need to know ffmpeg flags — Fast / Balanced / Max Compression for FLAC, 128k / 160k / 192k for Opus. See [Transcoding Presets](#transcoding-presets).
+- **Custom mode** for when you do: set bitrate or compression level directly, toggle metadata and cover-art copying, or pass raw ffmpeg arguments.
+- **Three output modes** — write to a shared output directory, drop an `.alto-out/` folder next to the source, or replace the originals in place with rollback. See [Output Modes](#output-modes).
+- **A job queue** with a configurable number of parallel workers (`ALTO_TRANSCODE_WORKERS`). Queue a dozen albums and walk away; jobs beyond capacity wait their turn, and the queue panel — visible on every screen — lets you watch or cancel any of them.
+- **Live progress**, streamed over SSE for both transcoding and library re-indexing. No page refreshing to find out where it's at.
+
+### Deployment
+
+- One Docker image with ffmpeg baked in — no separate ffmpeg install, no build step.
+- SQLite index in WAL mode; no external database to run alongside it.
+- Works on a phone or tablet as well as a desktop: the tree collapses into a drawer, the transcode panel becomes a slide-in sheet, and a floating Transcode button opens it.
 
 ## Quick Start
 
