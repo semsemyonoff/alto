@@ -247,6 +247,46 @@ func TestGetEnvIntDefault(t *testing.T) {
 	}
 }
 
+func TestParseConfig_ScanOnStart(t *testing.T) {
+	tests := []struct {
+		name    string
+		env     string
+		want    bool
+		wantErr bool
+	}{
+		{name: "unset defaults to true", env: "", want: true},
+		{name: "false disables", env: "false", want: false},
+		{name: "zero disables", env: "0", want: false},
+		{name: "true enables", env: "true", want: true},
+		{name: "padded value is trimmed", env: " false ", want: false},
+		{name: "invalid value errors", env: "maybe", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("ALTO_LIBRARIES", "Music:/music")
+			t.Setenv("ALTO_SCAN_ON_START", tt.env)
+
+			cfg, err := ParseConfig()
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error for invalid ALTO_SCAN_ON_START")
+				}
+				if !contains(err.Error(), "ALTO_SCAN_ON_START") {
+					t.Errorf("error %q does not mention env var name", err.Error())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if cfg.ScanOnStart != tt.want {
+				t.Errorf("scan on start: got %v, want %v", cfg.ScanOnStart, tt.want)
+			}
+		})
+	}
+}
+
 func contains(s, sub string) bool {
 	return len(s) >= len(sub) && (s == sub || len(sub) == 0 ||
 		func() bool {

@@ -22,12 +22,13 @@ import (
 
 // Config holds all runtime configuration parsed from environment variables.
 type Config struct {
-	Libraries []Library
-	Port      string
-	OutputDir string
-	DBPath    string
-	CacheDir  string
-	Workers   int
+	Libraries   []Library
+	Port        string
+	OutputDir   string
+	DBPath      string
+	CacheDir    string
+	Workers     int
+	ScanOnStart bool
 }
 
 // Library represents a named, mounted music library.
@@ -62,6 +63,12 @@ func ParseConfig() (*Config, error) {
 		workers = 1
 	}
 	cfg.Workers = workers
+
+	scanOnStart, err := getEnvBoolDefault("ALTO_SCAN_ON_START", true)
+	if err != nil {
+		return nil, err
+	}
+	cfg.ScanOnStart = scanOnStart
 
 	return cfg, nil
 }
@@ -137,6 +144,20 @@ func getEnvIntDefault(key string, def int) (int, error) {
 		return 0, fmt.Errorf("invalid %s %q: must be an integer", key, v)
 	}
 	return n, nil
+}
+
+// getEnvBoolDefault reads a boolean env var, returning def if unset.
+// Returns an error if the value is set but not a valid boolean.
+func getEnvBoolDefault(key string, def bool) (bool, error) {
+	v := os.Getenv(key)
+	if v == "" {
+		return def, nil
+	}
+	b, err := strconv.ParseBool(strings.TrimSpace(v))
+	if err != nil {
+		return false, fmt.Errorf("invalid %s %q: must be a boolean (1/0, true/false)", key, v)
+	}
+	return b, nil
 }
 
 func main() {
@@ -217,7 +238,14 @@ func main() {
 	mux.Handle("/", srv)
 
 	// Kick off an initial background scan so the UI is populated on first start.
-	srv.RunInitialScan()
+	// Disabled via ALTO_SCAN_ON_START=false for large libraries where a full
+	// re-index on every restart is too expensive; the UI's re-index button and
+	// POST /api/scan still work.
+	if cfg.ScanOnStart {
+		srv.RunInitialScan()
+	} else {
+		slog.Info("initial scan skipped", "reason", "ALTO_SCAN_ON_START=false")
+	}
 
 	addr := ":" + cfg.Port
 	slog.Info("starting ALTO", "addr", addr, "libraries", len(cfg.Libraries))

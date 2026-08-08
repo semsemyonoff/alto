@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 <!-- Write notes for the next release here. "Cut release" promotes this
      section to ## [X.Y.Z] - <date> and uses it as the release body. -->
 
+### Added
+- `ALTO_SCAN_ON_START` (default `true`) — set to `false` to skip the startup
+  library re-index on large collections where a full scan on every restart is
+  too costly. Manual re-index (UI button / `POST /api/scan`) is unaffected.
+
 ## [0.1.0] - 2026-07-11
 
 Initial release of **ALTO** — a self-hosted web service for browsing and

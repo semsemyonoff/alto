@@ -27,6 +27,8 @@ services:
       ALTO_DB_PATH: "/data/alto.db"
       ALTO_CACHE_DIR: "/data/cache"
       ALTO_TRANSCODE_WORKERS: "${ALTO_TRANSCODE_WORKERS:-1}"
+      # Set to false to skip the startup re-index on large libraries.
+      ALTO_SCAN_ON_START: "${ALTO_SCAN_ON_START:-true}"
       TZ: "${TZ:-UTC}"
     volumes:
       # Library sources. `:ro` is safe ONLY for Shared /out mode; the local
