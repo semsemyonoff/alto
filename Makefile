@@ -24,7 +24,7 @@ ALTO_PLATFORMS ?= linux/amd64,linux/arm64
 
 export ALTO_IMAGE ALTO_TAG ALTO_PLATFORMS
 
-.PHONY: help build test lint run docker-build image-build frontend-build dev \
+.PHONY: help build test test-race lint run docker-build image-build frontend-build dev \
         up down restart pull logs ps release release-local
 
 help: ## Show this help
