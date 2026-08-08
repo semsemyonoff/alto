@@ -238,11 +238,10 @@ func (s *Scanner) scan(ctx context.Context, lib db.Library, progress func(discov
 			continue
 		}
 
-		for _, t := range tracks {
-			t.DirectoryID = dirID
-			if upsertErr := s.db.UpsertTrack(t); upsertErr != nil {
-				slog.Warn("upsert track", "file", t.Filename, "err", upsertErr)
-			}
+		// One transaction per directory: a failure rolls back this directory's
+		// tracks, so warn once and move on rather than aborting the scan.
+		if writeErr := s.db.UpsertTracks(dirID, tracks); writeErr != nil {
+			slog.Warn("upsert tracks", "dir", rel, "tracks", len(tracks), "err", writeErr)
 		}
 
 		if deleteErr := s.db.DeleteStaleFiles(dirID, audioFiles); deleteErr != nil {

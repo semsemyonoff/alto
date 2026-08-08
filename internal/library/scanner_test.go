@@ -16,9 +16,15 @@ type mockProber struct {
 	err     map[string]error
 	// defaultResult is returned for any path not in results.
 	defaultResult *TrackInfo
+	// hook, if set, runs before each probe. It lets a test mutate the tree
+	// between the walk and a later directory's probe.
+	hook func(path string)
 }
 
 func (m *mockProber) Probe(_ context.Context, path string) (*TrackInfo, error) {
+	if m.hook != nil {
+		m.hook(path)
+	}
 	if e, ok := m.err[path]; ok {
 		return nil, e
 	}
@@ -682,6 +688,145 @@ func TestBuildCodecSummary(t *testing.T) {
 				t.Errorf("got %q want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestScannerBatchWritesAllTracks verifies every track of a multi-file directory
+// survives the batched write path with its probed metadata intact.
+func TestScannerBatchWritesAllTracks(t *testing.T) {
+	root := makeTestTree(t, map[string][]string{
+		"Album": {"01.flac", "02.mp3", "03.opus"},
+	})
+
+	database := openTestDB(t)
+	libID, err := database.UpsertLibrary("test", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dirPath := filepath.Join(root, "Album")
+	prober := &mockProber{
+		results: map[string]*TrackInfo{
+			filepath.Join(dirPath, "01.flac"): {Codec: "flac", Bitrate: 900000, Duration: 61.5, SampleRate: 44100, Channels: 2},
+			filepath.Join(dirPath, "02.mp3"):  {Codec: "mp3", Bitrate: 320000, Duration: 122.25, SampleRate: 48000, Channels: 1},
+			filepath.Join(dirPath, "03.opus"): {Codec: "opus", Bitrate: 128000, Duration: 33, SampleRate: 48000, Channels: 2},
+		},
+	}
+
+	s := NewScanner(database, prober, ScanConfig{CacheDir: t.TempDir()})
+	lib := db.Library{ID: libID, Name: "test", Path: root}
+	if err := s.Scan(context.Background(), lib); err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+
+	dir, err := database.GetDirectoryByPath(libID, "Album")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dir == nil {
+		t.Fatal("expected Album to be indexed")
+	}
+
+	tracks, err := database.GetDirectoryFiles(dir.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tracks) != 3 {
+		t.Fatalf("expected 3 tracks, got %d", len(tracks))
+	}
+
+	byName := make(map[string]db.Track, len(tracks))
+	for _, tr := range tracks {
+		byName[tr.Filename] = tr
+	}
+
+	want := map[string]db.Track{
+		"01.flac": {Codec: "flac", Bitrate: 900000, Duration: 61.5, SampleRate: 44100, Channels: 2},
+		"02.mp3":  {Codec: "mp3", Bitrate: 320000, Duration: 122.25, SampleRate: 48000, Channels: 1},
+		"03.opus": {Codec: "opus", Bitrate: 128000, Duration: 33, SampleRate: 48000, Channels: 2},
+	}
+	for name, w := range want {
+		got, ok := byName[name]
+		if !ok {
+			t.Errorf("%s: missing from DB", name)
+			continue
+		}
+		if got.DirectoryID != dir.ID {
+			t.Errorf("%s: DirectoryID = %d, want %d", name, got.DirectoryID, dir.ID)
+		}
+		if got.Codec != w.Codec || got.Bitrate != w.Bitrate || got.Duration != w.Duration ||
+			got.SampleRate != w.SampleRate || got.Channels != w.Channels {
+			t.Errorf("%s: got %+v, want codec/bitrate/duration/rate/channels %+v", name, got, w)
+		}
+		fi, statErr := os.Stat(filepath.Join(dirPath, name))
+		if statErr != nil {
+			t.Fatal(statErr)
+		}
+		if got.Size != fi.Size() {
+			t.Errorf("%s: Size = %d, want %d", name, got.Size, fi.Size())
+		}
+	}
+}
+
+// TestScannerBatchWriteNoProbeableFiles verifies a directory whose audio files
+// all vanish before probing writes no track rows and does not fail the scan.
+func TestScannerBatchWriteNoProbeableFiles(t *testing.T) {
+	root := makeTestTree(t, map[string][]string{
+		"A-Album": {"keeper.flac"},
+		"B-Album": {"gone.flac"},
+	})
+
+	database := openTestDB(t)
+	libID, err := database.UpsertLibrary("test", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Directories are processed in sorted order, so deleting B-Album's only file
+	// while probing A-Album drops it after the walk listed it: probeFiles' os.Stat
+	// then fails and the directory yields zero tracks.
+	victim := filepath.Join(root, "B-Album", "gone.flac")
+	prober := &mockProber{hook: func(string) { _ = os.Remove(victim) }}
+
+	s := NewScanner(database, prober, ScanConfig{CacheDir: t.TempDir()})
+	lib := db.Library{ID: libID, Name: "test", Path: root}
+	if err := s.Scan(context.Background(), lib); err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+
+	dir, err := database.GetDirectoryByPath(libID, "B-Album")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dir == nil {
+		t.Fatal("expected B-Album to still be indexed")
+	}
+
+	tracks, err := database.GetDirectoryFiles(dir.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tracks) != 0 {
+		t.Fatalf("expected no tracks, got %d: %+v", len(tracks), tracks)
+	}
+	if dir.CodecSummary != "" {
+		t.Errorf("CodecSummary: got %q want empty", dir.CodecSummary)
+	}
+
+	// The unaffected sibling is still written normally.
+	kept, err := database.GetDirectoryByPath(libID, "A-Album")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kept == nil {
+		t.Fatal("expected A-Album to be indexed")
+	}
+	keptTracks, err := database.GetDirectoryFiles(kept.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(keptTracks) != 1 || keptTracks[0].Filename != "keeper.flac" {
+		t.Fatalf("expected keeper.flac in A-Album, got %+v", keptTracks)
 	}
 }
 
