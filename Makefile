@@ -42,6 +42,9 @@ build: frontend-build ## Build the alto binary (frontend included)
 test: ## Run the Go test suite
 	go test ./...
 
+test-race: ## Run the Go test suite under the race detector (needs cgo)
+	CGO_ENABLED=1 go test -race ./...
+
 lint: ## Run golangci-lint
 	golangci-lint run
 

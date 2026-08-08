@@ -416,13 +416,17 @@ func (s *Scanner) probeFiles(ctx context.Context, dirPath string, audioFiles []s
 	var probed atomic.Bool
 	var wg sync.WaitGroup
 
+	// The token is taken before the goroutine is started, so a directory with
+	// thousands of files does not park thousands of goroutines on the semaphore.
+launch:
 	for i, name := range audioFiles {
+		select {
+		case s.sem <- struct{}{}:
+		case <-ctx.Done():
+			break launch
+		}
+
 		wg.Go(func() {
-			select {
-			case s.sem <- struct{}{}:
-			case <-ctx.Done():
-				return
-			}
 			defer func() { <-s.sem }()
 
 			t, hit, ok := s.probeFile(ctx, dirPath, name, cached)

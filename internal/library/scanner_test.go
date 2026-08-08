@@ -989,6 +989,29 @@ func TestScannerEmbeddedCoverUsesCachedFile(t *testing.T) {
 			t.Errorf("%s: HasEmbeddedCover=false, want true", tr.Filename)
 		}
 	}
+
+	// A warm rescan resolves the cover from the stored flag, with no probe to
+	// supply it: if has_embedded_cover stopped round-tripping through the DB,
+	// covers would silently disappear from every scan after the first.
+	if err := s.Scan(context.Background(), lib); err != nil {
+		t.Fatalf("second Scan: %v", err)
+	}
+	if got := prober.total(); got != 2 {
+		t.Errorf("probes after the second scan: got %d want 2 (rescan must be probe-free)", got)
+	}
+	dir, err = database.GetDirectoryByPath(libID, "Album")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dir == nil {
+		t.Fatal("expected Album to still be indexed")
+	}
+	if !dir.HasCover {
+		t.Error("HasCover after the warm rescan: got false, want true")
+	}
+	if dir.CoverPath != cacheFile {
+		t.Errorf("CoverPath after the warm rescan: got %q want %q", dir.CoverPath, cacheFile)
+	}
 }
 
 // TestScannerExternalCoverBeatsEmbedded verifies external art still wins over
@@ -2014,4 +2037,230 @@ func TestIsAltoDir(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestScannerFileRewrittenDuringProbeRetriedNextScan verifies the post-probe
+// re-stat: a file rewritten while ffprobe ran must not pin the *new*
+// (size, mtime) against the *old* file's metadata. It is stored with MTime 0
+// and re-probed on the next scan.
+func TestScannerFileRewrittenDuringProbeRetriedNextScan(t *testing.T) {
+	root := makeTestTree(t, map[string][]string{
+		"Album": {"01.flac", "02.flac"},
+	})
+
+	database := openTestDB(t)
+	libID, err := database.UpsertLibrary("test", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	target := filepath.Join(root, "Album", "01.flac")
+	var rewritten atomic.Bool
+	prober := &mockProber{
+		// Rewrite the file that is being probed right now, once, so the second
+		// scan sees a settled file and can observe the retry.
+		hook: func(path string) {
+			if path != target || !rewritten.CompareAndSwap(false, true) {
+				return
+			}
+			if writeErr := os.WriteFile(path, []byte("rewritten mid-probe"), 0o644); writeErr != nil {
+				t.Errorf("rewrite during probe: %v", writeErr)
+				return
+			}
+			distant := time.Now().Add(-72 * time.Hour)
+			if chErr := os.Chtimes(path, distant, distant); chErr != nil {
+				t.Errorf("chtimes during probe: %v", chErr)
+			}
+		},
+	}
+
+	s := NewScanner(database, prober, ScanConfig{CacheDir: t.TempDir()})
+	lib := db.Library{ID: libID, Name: "test", Path: root}
+	if err := s.Scan(context.Background(), lib); err != nil {
+		t.Fatalf("first Scan: %v", err)
+	}
+
+	stored := tracksByName(t, database, libID, "Album")
+	if got := stored["01.flac"].MTime; got != 0 {
+		t.Errorf("01.flac MTime after a mid-probe rewrite: got %d, want 0 (untrusted row)", got)
+	}
+	if stored["02.flac"].MTime == 0 {
+		t.Error("02.flac MTime: got 0, want the real mtime — the untouched file must stay cacheable")
+	}
+
+	if err := s.Scan(context.Background(), lib); err != nil {
+		t.Fatalf("second Scan: %v", err)
+	}
+
+	if got := prober.count(target); got != 2 {
+		t.Errorf("rewritten file probed %d times, want 2 (retried on the second scan)", got)
+	}
+	if got := prober.count(filepath.Join(root, "Album", "02.flac")); got != 1 {
+		t.Errorf("untouched file probed %d times, want 1 (cache hit on the second scan)", got)
+	}
+	if got := tracksByName(t, database, libID, "Album")["01.flac"].MTime; got == 0 {
+		t.Error("01.flac MTime after the retry: got 0, want the settled mtime")
+	}
+}
+
+// TestScannerFileRemovedDuringProbeStoredUntrusted covers the other arm of the
+// post-probe re-stat: the file disappears while ffprobe runs, so the stat fails
+// and the row is stored with MTime 0 rather than a value that would cache the
+// metadata of a file that no longer exists.
+func TestScannerFileRemovedDuringProbeStoredUntrusted(t *testing.T) {
+	root := makeTestTree(t, map[string][]string{
+		"Album": {"01.flac", "02.flac"},
+	})
+
+	database := openTestDB(t)
+	libID, err := database.UpsertLibrary("test", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	target := filepath.Join(root, "Album", "01.flac")
+	prober := &mockProber{
+		hook: func(path string) {
+			if path != target {
+				return
+			}
+			if rmErr := os.Remove(path); rmErr != nil && !os.IsNotExist(rmErr) {
+				t.Errorf("remove during probe: %v", rmErr)
+			}
+		},
+	}
+
+	s := NewScanner(database, prober, ScanConfig{CacheDir: t.TempDir()})
+	lib := db.Library{ID: libID, Name: "test", Path: root}
+	if err := s.Scan(context.Background(), lib); err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+
+	stored := tracksByName(t, database, libID, "Album")
+	row, ok := stored["01.flac"]
+	if !ok {
+		t.Fatalf("01.flac has no row; stored: %v", stored)
+	}
+	if row.MTime != 0 {
+		t.Errorf("01.flac MTime after the file vanished mid-probe: got %d, want 0", row.MTime)
+	}
+}
+
+// TestScanAllProbeConcurrencyBoundedAcrossLibraries verifies the worker
+// semaphore is scanner-wide: scanning two libraries at once must not multiply
+// the configured probe concurrency by the number of libraries.
+func TestScanAllProbeConcurrencyBoundedAcrossLibraries(t *testing.T) {
+	const workers = 2
+	files := []string{"01.flac", "02.flac", "03.flac", "04.flac", "05.flac", "06.flac"}
+	root1 := makeTestTree(t, map[string][]string{"AlbumA": files})
+	root2 := makeTestTree(t, map[string][]string{"AlbumB": files})
+
+	database := openTestDB(t)
+	id1, err := database.UpsertLibrary("lib1", root1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id2, err := database.UpsertLibrary("lib2", root2)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Long enough that both libraries have probes pending at the same time.
+	prober := &mockProber{delay: 20 * time.Millisecond}
+	s := NewScanner(database, prober, ScanConfig{CacheDir: t.TempDir(), Workers: workers})
+	libs := []db.Library{
+		{ID: id1, Name: "lib1", Path: root1},
+		{ID: id2, Name: "lib2", Path: root2},
+	}
+
+	if err := s.ScanAll(context.Background(), libs, nil); err != nil {
+		t.Fatalf("ScanAll: %v", err)
+	}
+
+	if got := prober.peakInFlight(); got > workers {
+		t.Errorf("peak concurrent probes across %d libraries: got %d, want at most %d", len(libs), got, workers)
+	} else if got < workers {
+		t.Errorf("peak concurrent probes: got %d, probes never ran in parallel", got)
+	}
+	if got, want := prober.total(), 2*len(files); got != want {
+		t.Errorf("probes: got %d want %d", got, want)
+	}
+}
+
+// TestScannerCachesLibraryRootDirectory verifies the incremental cache also
+// covers audio files sitting directly in the library root, whose stored
+// directory path is the empty string.
+func TestScannerCachesLibraryRootDirectory(t *testing.T) {
+	root := makeTestTree(t, map[string][]string{
+		"": {"01.flac", "02.flac"},
+	})
+
+	database := openTestDB(t)
+	libID, err := database.UpsertLibrary("test", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	prober := &mockProber{}
+	s := NewScanner(database, prober, ScanConfig{CacheDir: t.TempDir()})
+	lib := db.Library{ID: libID, Name: "test", Path: root}
+	if err := s.Scan(context.Background(), lib); err != nil {
+		t.Fatalf("first Scan: %v", err)
+	}
+	if got := prober.total(); got != 2 {
+		t.Fatalf("first scan probes: got %d want 2", got)
+	}
+
+	stored := tracksByName(t, database, libID, "")
+	if len(stored) != 2 {
+		t.Fatalf("stored tracks in the library root: got %d want 2", len(stored))
+	}
+	for name, tr := range stored {
+		if tr.MTime == 0 {
+			t.Errorf("%s: MTime 0, want the real mtime", name)
+		}
+	}
+
+	if err := s.Scan(context.Background(), lib); err != nil {
+		t.Fatalf("second Scan: %v", err)
+	}
+	if got := prober.total(); got != 2 {
+		t.Errorf("probes after the second scan: got %d want 2 (root files must hit the cache)", got)
+	}
+}
+
+// TestTracksMatchCache pins the contract of the write-skip guard directly: the
+// scanner only reaches it on an all-cache-hit pass, so the name-mismatch case is
+// unreachable from Scan and would otherwise go unexercised.
+func TestTracksMatchCache(t *testing.T) {
+	cached := map[string]db.Track{
+		"01.flac": {Filename: "01.flac"},
+		"02.flac": {Filename: "02.flac"},
+	}
+
+	tests := []struct {
+		name   string
+		tracks []db.Track
+		want   bool
+	}{
+		{"same set", []db.Track{{Filename: "01.flac"}, {Filename: "02.flac"}}, true},
+		{"order does not matter", []db.Track{{Filename: "02.flac"}, {Filename: "01.flac"}}, true},
+		{"fewer tracks", []db.Track{{Filename: "01.flac"}}, false},
+		{"extra track", []db.Track{{Filename: "01.flac"}, {Filename: "02.flac"}, {Filename: "03.flac"}}, false},
+		{"same count, different name", []db.Track{{Filename: "01.flac"}, {Filename: "03.flac"}}, false},
+		{"empty tracks against populated cache", nil, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tracksMatchCache(tc.tracks, cached); got != tc.want {
+				t.Errorf("tracksMatchCache(%v) = %v, want %v", tc.tracks, got, tc.want)
+			}
+		})
+	}
+
+	t.Run("empty cache and no tracks", func(t *testing.T) {
+		if !tracksMatchCache(nil, nil) {
+			t.Error("tracksMatchCache(nil, nil) = false, want true")
+		}
+	})
 }

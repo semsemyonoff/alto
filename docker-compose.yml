@@ -27,7 +27,8 @@ services:
       ALTO_DB_PATH: "/data/alto.db"
       ALTO_CACHE_DIR: "/data/cache"
       ALTO_TRANSCODE_WORKERS: "${ALTO_TRANSCODE_WORKERS:-1}"
-      # Set to false to skip the startup re-index on large libraries.
+      # Startup re-index. Scanning is incremental (a rescan of an unchanged
+      # library is a walk + stat pass); false skips even that.
       ALTO_SCAN_ON_START: "${ALTO_SCAN_ON_START:-true}"
       # Concurrent ffprobe processes during a scan; 0 = min(4, NumCPU).
       ALTO_SCAN_WORKERS: "${ALTO_SCAN_WORKERS:-0}"
