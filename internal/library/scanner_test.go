@@ -3,11 +3,13 @@ package library
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/semsemyonoff/ALTO/internal/db"
 )
@@ -1132,6 +1134,285 @@ func TestScannerNoCoverWhenAllAudioFilesVanish(t *testing.T) {
 	}
 	if dir.HasCover || dir.CoverPath != "" {
 		t.Errorf("expected no cover, got HasCover=%v CoverPath=%q", dir.HasCover, dir.CoverPath)
+	}
+}
+
+// tracksByName returns the stored tracks of one directory keyed by filename.
+func tracksByName(t *testing.T, database *db.DB, libID int64, relPath string) map[string]db.Track {
+	t.Helper()
+	dir, err := database.GetDirectoryByPath(libID, relPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dir == nil {
+		t.Fatalf("directory %q not indexed", relPath)
+	}
+	tracks, err := database.GetDirectoryFiles(dir.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := make(map[string]db.Track, len(tracks))
+	for _, tr := range tracks {
+		byName[tr.Filename] = tr
+	}
+	return byName
+}
+
+// TestScannerRescanSkipsUnchangedFiles verifies a second scan of an untouched
+// tree spawns no probes at all and leaves the stored metadata identical.
+func TestScannerRescanSkipsUnchangedFiles(t *testing.T) {
+	root := makeTestTree(t, map[string][]string{
+		"Album":       {"01.flac", "02.flac"},
+		"Album/Extra": {"03.flac"},
+	})
+
+	database := openTestDB(t)
+	libID, err := database.UpsertLibrary("test", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	prober := &mockProber{
+		defaultResult: &TrackInfo{Codec: "flac", Bitrate: 900000, Duration: 61.5, SampleRate: 44100, Channels: 2},
+	}
+
+	s := NewScanner(database, prober, ScanConfig{CacheDir: t.TempDir()})
+	lib := db.Library{ID: libID, Name: "test", Path: root}
+	if err := s.Scan(context.Background(), lib); err != nil {
+		t.Fatalf("first Scan: %v", err)
+	}
+
+	if got := prober.total(); got != 3 {
+		t.Fatalf("first scan probes: got %d want 3", got)
+	}
+	before := tracksByName(t, database, libID, "Album")
+	if len(before) != 2 {
+		t.Fatalf("expected 2 tracks in Album, got %d", len(before))
+	}
+	for name, tr := range before {
+		if tr.MTime == 0 {
+			t.Errorf("%s: MTime not stored after a successful probe", name)
+		}
+	}
+
+	if err := s.Scan(context.Background(), lib); err != nil {
+		t.Fatalf("second Scan: %v", err)
+	}
+
+	if got := prober.total(); got != 3 {
+		t.Errorf("second scan spawned %d extra probes, want 0", got-3)
+	}
+
+	after := tracksByName(t, database, libID, "Album")
+	if len(after) != len(before) {
+		t.Fatalf("track count changed: %d -> %d", len(before), len(after))
+	}
+	for name, w := range before {
+		got, ok := after[name]
+		if !ok {
+			t.Errorf("%s: missing after rescan", name)
+			continue
+		}
+		if got != w {
+			t.Errorf("%s: row changed across rescan\n got %+v\nwant %+v", name, got, w)
+		}
+	}
+}
+
+// TestScannerReprobesChangedMTime verifies that touching a single file re-probes
+// exactly that file.
+func TestScannerReprobesChangedMTime(t *testing.T) {
+	root := makeTestTree(t, map[string][]string{
+		"Album": {"01.flac", "02.flac", "03.flac"},
+	})
+
+	database := openTestDB(t)
+	libID, err := database.UpsertLibrary("test", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	prober := &mockProber{}
+	s := NewScanner(database, prober, ScanConfig{CacheDir: t.TempDir()})
+	lib := db.Library{ID: libID, Name: "test", Path: root}
+	if err := s.Scan(context.Background(), lib); err != nil {
+		t.Fatalf("first Scan: %v", err)
+	}
+
+	// A distant timestamp, not a rewrite: on a coarse-timestamp filesystem a
+	// rewrite of a small fixture can land in the same window and pass falsely.
+	touched := filepath.Join(root, "Album", "02.flac")
+	distant := time.Now().Add(-72 * time.Hour)
+	if err := os.Chtimes(touched, distant, distant); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.Scan(context.Background(), lib); err != nil {
+		t.Fatalf("second Scan: %v", err)
+	}
+
+	if got := prober.count(touched); got != 2 {
+		t.Errorf("touched file probed %d times, want 2 (once per scan)", got)
+	}
+	for _, name := range []string{"01.flac", "03.flac"} {
+		if got := prober.count(filepath.Join(root, "Album", name)); got != 1 {
+			t.Errorf("%s: probed %d times, want 1", name, got)
+		}
+	}
+
+	stored := tracksByName(t, database, libID, "Album")
+	if got := stored["02.flac"].MTime; got != distant.UnixNano() {
+		t.Errorf("02.flac MTime: got %d want %d", got, distant.UnixNano())
+	}
+}
+
+// TestScannerReprobesChangedSize verifies that a size change alone re-probes the
+// file even when its mtime is restored to the cached value.
+func TestScannerReprobesChangedSize(t *testing.T) {
+	root := makeTestTree(t, map[string][]string{
+		"Album": {"01.flac", "02.flac"},
+	})
+
+	database := openTestDB(t)
+	libID, err := database.UpsertLibrary("test", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	prober := &mockProber{}
+	s := NewScanner(database, prober, ScanConfig{CacheDir: t.TempDir()})
+	lib := db.Library{ID: libID, Name: "test", Path: root}
+	if err := s.Scan(context.Background(), lib); err != nil {
+		t.Fatalf("first Scan: %v", err)
+	}
+
+	stored := tracksByName(t, database, libID, "Album")
+	grown := filepath.Join(root, "Album", "01.flac")
+	if err := os.WriteFile(grown, []byte("fake but longer"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Restore the cached mtime so size is the only difference left.
+	prevMTime := time.Unix(0, stored["01.flac"].MTime)
+	if err := os.Chtimes(grown, prevMTime, prevMTime); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.Scan(context.Background(), lib); err != nil {
+		t.Fatalf("second Scan: %v", err)
+	}
+
+	if got := prober.count(grown); got != 2 {
+		t.Errorf("resized file probed %d times, want 2 (once per scan)", got)
+	}
+	if got := prober.count(filepath.Join(root, "Album", "02.flac")); got != 1 {
+		t.Errorf("unchanged file probed %d times, want 1", got)
+	}
+
+	fi, err := os.Stat(grown)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := tracksByName(t, database, libID, "Album")["01.flac"].Size; got != fi.Size() {
+		t.Errorf("01.flac Size: got %d want %d", got, fi.Size())
+	}
+}
+
+// TestScannerProbesOnlyAddedFile verifies a file added to an already-scanned
+// directory is the only one probed on the next scan.
+func TestScannerProbesOnlyAddedFile(t *testing.T) {
+	root := makeTestTree(t, map[string][]string{
+		"Album": {"01.flac", "02.flac"},
+	})
+
+	database := openTestDB(t)
+	libID, err := database.UpsertLibrary("test", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	prober := &mockProber{}
+	s := NewScanner(database, prober, ScanConfig{CacheDir: t.TempDir()})
+	lib := db.Library{ID: libID, Name: "test", Path: root}
+	if err := s.Scan(context.Background(), lib); err != nil {
+		t.Fatalf("first Scan: %v", err)
+	}
+
+	added := filepath.Join(root, "Album", "03.flac")
+	if err := os.WriteFile(added, []byte("fake"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.Scan(context.Background(), lib); err != nil {
+		t.Fatalf("second Scan: %v", err)
+	}
+
+	if got := prober.total(); got != 3 {
+		t.Errorf("total probes: got %d want 3 (2 initial + 1 added)", got)
+	}
+	if got := prober.count(added); got != 1 {
+		t.Errorf("added file probed %d times, want 1", got)
+	}
+
+	stored := tracksByName(t, database, libID, "Album")
+	if len(stored) != 3 {
+		t.Fatalf("expected 3 stored tracks, got %d", len(stored))
+	}
+}
+
+// TestScannerFailedProbeRetriedNextScan verifies a file whose probe fails is
+// stored with MTime 0 and is probed again on the next scan even though nothing
+// about it changed on disk.
+func TestScannerFailedProbeRetriedNextScan(t *testing.T) {
+	root := makeTestTree(t, map[string][]string{
+		"Album": {"broken.flac", "ok.flac"},
+	})
+
+	database := openTestDB(t)
+	libID, err := database.UpsertLibrary("test", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	broken := filepath.Join(root, "Album", "broken.flac")
+	prober := &mockProber{err: map[string]error{broken: errors.New("ffprobe: invalid data")}}
+
+	s := NewScanner(database, prober, ScanConfig{CacheDir: t.TempDir()})
+	lib := db.Library{ID: libID, Name: "test", Path: root}
+	if err := s.Scan(context.Background(), lib); err != nil {
+		t.Fatalf("first Scan: %v", err)
+	}
+
+	stored := tracksByName(t, database, libID, "Album")
+	if got := stored["broken.flac"].MTime; got != 0 {
+		t.Errorf("failed probe stored MTime %d, want 0", got)
+	}
+	if stored["broken.flac"].Codec != "" {
+		t.Errorf("failed probe stored codec %q, want empty", stored["broken.flac"].Codec)
+	}
+	if stored["ok.flac"].MTime == 0 {
+		t.Error("ok.flac: MTime not stored after a successful probe")
+	}
+
+	// The probe now succeeds; the retry must pick the metadata up.
+	prober.err = nil
+
+	if err := s.Scan(context.Background(), lib); err != nil {
+		t.Fatalf("second Scan: %v", err)
+	}
+
+	if got := prober.count(broken); got != 2 {
+		t.Errorf("failed file probed %d times, want 2 (retried)", got)
+	}
+	if got := prober.count(filepath.Join(root, "Album", "ok.flac")); got != 1 {
+		t.Errorf("ok.flac probed %d times, want 1", got)
+	}
+
+	stored = tracksByName(t, database, libID, "Album")
+	if stored["broken.flac"].MTime == 0 {
+		t.Error("broken.flac: MTime still 0 after a successful retry")
+	}
+	if stored["broken.flac"].Codec != "flac" {
+		t.Errorf("broken.flac codec after retry: got %q want %q", stored["broken.flac"].Codec, "flac")
 	}
 }
 

@@ -228,9 +228,17 @@ func (s *Scanner) scan(ctx context.Context, lib db.Library, progress func(discov
 		info := dirInfos[rel]
 		audioFiles := dirToFiles[rel]
 
+		// Stored rows of this directory, keyed by filename: probeFiles reuses the
+		// ones whose (size, mtime) still match on disk instead of re-probing.
+		cached, cacheErr := s.db.GetTracksByDirPath(lib.ID, rel)
+		if cacheErr != nil {
+			slog.Warn("read cached tracks", "dir", rel, "err", cacheErr)
+			cached = nil
+		}
+
 		// Probe before resolving the cover: resolveCover reads the embedded-art
 		// flag off an already-probed track instead of probing the first file again.
-		tracks := s.probeFiles(ctx, info.absPath, audioFiles)
+		tracks := s.probeFiles(ctx, info.absPath, audioFiles, cached)
 		coverPath, hasCover := s.resolveCover(ctx, info.absPath, tracks, lib.ID, rel)
 		codecSummary := buildCodecSummary(tracks)
 
@@ -359,25 +367,36 @@ func (s *Scanner) resolveCover(ctx context.Context, dirPath string, tracks []db.
 	return cacheFile, true
 }
 
-// probeFiles runs ffprobe on each audio file and returns Track records.
-func (s *Scanner) probeFiles(ctx context.Context, dirPath string, audioFiles []string) []db.Track {
+// probeFiles returns a Track record per audio file, running ffprobe only on the
+// files whose size and mtime differ from the cached row of the same name.
+func (s *Scanner) probeFiles(ctx context.Context, dirPath string, audioFiles []string, cached map[string]db.Track) []db.Track {
 	tracks := make([]db.Track, 0, len(audioFiles))
 	for _, name := range audioFiles {
 		fullPath := filepath.Join(dirPath, name)
-		fi, err := os.Stat(fullPath)
+		before, err := os.Stat(fullPath)
 		if err != nil {
 			slog.Warn("stat audio file", "path", fullPath, "err", err)
 			continue
 		}
 
+		// MTime 0 marks a row whose metadata could not be trusted (migrated,
+		// failed probe, or a file that changed mid-scan) and never counts as a hit.
+		if prev, ok := cached[name]; ok && prev.MTime != 0 &&
+			prev.Size == before.Size() && prev.MTime == before.ModTime().UnixNano() {
+			tracks = append(tracks, prev)
+			continue
+		}
+
 		t := db.Track{
 			Filename: name,
-			Size:     fi.Size(),
+			Size:     before.Size(),
+			MTime:    before.ModTime().UnixNano(),
 		}
 
 		info, probeErr := s.prober.Probe(ctx, fullPath)
 		if probeErr != nil {
 			slog.Warn("ffprobe", "file", fullPath, "err", probeErr)
+			t.MTime = 0
 		} else {
 			t.Codec = info.Codec
 			t.Bitrate = info.Bitrate
@@ -385,6 +404,16 @@ func (s *Scanner) probeFiles(ctx context.Context, dirPath string, audioFiles []s
 			t.SampleRate = info.SampleRate
 			t.Channels = info.Channels
 			t.HasEmbeddedCover = info.HasCover
+
+			// The file may have been rewritten while ffprobe ran; pinning the new
+			// (size, mtime) against the old file's metadata would cache it forever.
+			after, statErr := os.Stat(fullPath)
+			if statErr != nil || after.Size() != before.Size() || !after.ModTime().Equal(before.ModTime()) {
+				t.MTime = 0
+			} else {
+				t.Size = after.Size()
+				t.MTime = after.ModTime().UnixNano()
+			}
 		}
 		tracks = append(tracks, t)
 	}
