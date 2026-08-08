@@ -774,3 +774,205 @@ func trackColumns(t *testing.T, database *DB) map[string]struct{} {
 	}
 	return cols
 }
+
+// TestGetTracksByDirPath covers a populated directory, an unknown path, and
+// library scoping of the same relative path.
+func TestGetTracksByDirPath(t *testing.T) {
+	db := openMem(t)
+
+	libA, _ := db.UpsertLibrary("gtp-a", "/gtp-a")
+	libB, _ := db.UpsertLibrary("gtp-b", "/gtp-b")
+	dirA, _ := db.UpsertDirectory(libA, "albums/X", "FLAC", false, "")
+	dirB, _ := db.UpsertDirectory(libB, "albums/X", "MP3", false, "")
+
+	if err := db.UpsertTracks(dirA, []Track{
+		{Filename: "01.flac", Codec: "flac", Bitrate: 900000, Duration: 240.5, SampleRate: 44100, Channels: 2, Size: 30000000, MTime: 111, HasEmbeddedCover: true},
+		{Filename: "02.flac", Codec: "flac", Size: 40000000, MTime: 222},
+	}); err != nil {
+		t.Fatalf("UpsertTracks libA: %v", err)
+	}
+	if err := db.UpsertTracks(dirB, []Track{{Filename: "01.mp3", Codec: "mp3"}}); err != nil {
+		t.Fatalf("UpsertTracks libB: %v", err)
+	}
+
+	got, err := db.GetTracksByDirPath(libA, "albums/X")
+	if err != nil {
+		t.Fatalf("GetTracksByDirPath: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 tracks, got %d (%v)", len(got), got)
+	}
+	first, ok := got["01.flac"]
+	if !ok {
+		t.Fatal("missing 01.flac in result map")
+	}
+	if first.DirectoryID != dirA || first.ID == 0 {
+		t.Fatalf("unexpected identity fields: %+v", first)
+	}
+	if first.Codec != "flac" || first.Bitrate != 900000 || first.Duration != 240.5 ||
+		first.SampleRate != 44100 || first.Channels != 2 || first.Size != 30000000 ||
+		first.MTime != 111 || !first.HasEmbeddedCover {
+		t.Fatalf("field round-trip mismatch: %+v", first)
+	}
+
+	// Library scoping: the same relative path in another library must not bleed.
+	if _, ok := got["01.mp3"]; ok {
+		t.Fatal("track from another library leaked into the result")
+	}
+
+	// Unknown path: empty map, no error.
+	empty, err := db.GetTracksByDirPath(libA, "albums/does-not-exist")
+	if err != nil {
+		t.Fatalf("GetTracksByDirPath unknown path: %v", err)
+	}
+	if empty == nil {
+		t.Fatal("expected non-nil empty map for unknown path")
+	}
+	if len(empty) != 0 {
+		t.Fatalf("expected 0 tracks for unknown path, got %d", len(empty))
+	}
+}
+
+// TestUpsertTracks covers the insert and update batch paths, the empty-slice
+// no-op, and a batch that repeats a filename.
+func TestUpsertTracks(t *testing.T) {
+	db := openMem(t)
+
+	libID, _ := db.UpsertLibrary("ut-lib", "/ut-lib")
+	dirID, _ := db.UpsertDirectory(libID, "dir", "FLAC", false, "")
+
+	// Empty slice is a no-op.
+	if err := db.UpsertTracks(dirID, nil); err != nil {
+		t.Fatalf("UpsertTracks(nil): %v", err)
+	}
+	if tracks, _ := db.GetDirectoryFiles(dirID); len(tracks) != 0 {
+		t.Fatalf("expected 0 tracks after empty batch, got %d", len(tracks))
+	}
+
+	// Insert batch.
+	if err := db.UpsertTracks(dirID, []Track{
+		{Filename: "01.flac", Codec: "flac", Size: 100, MTime: 11, HasEmbeddedCover: true},
+		{Filename: "02.flac", Codec: "flac", Size: 200, MTime: 22},
+		{Filename: "03.flac", Codec: "flac", Size: 300, MTime: 33},
+	}); err != nil {
+		t.Fatalf("UpsertTracks insert: %v", err)
+	}
+	tracks, err := db.GetDirectoryFiles(dirID)
+	if err != nil {
+		t.Fatalf("GetDirectoryFiles: %v", err)
+	}
+	if len(tracks) != 3 {
+		t.Fatalf("expected 3 tracks after insert batch, got %d", len(tracks))
+	}
+
+	// Update batch: same filenames, new values.
+	if err := db.UpsertTracks(dirID, []Track{
+		{Filename: "01.flac", Codec: "alac", Size: 101, MTime: 111},
+		{Filename: "02.flac", Codec: "alac", Size: 201, MTime: 222, HasEmbeddedCover: true},
+		{Filename: "03.flac", Codec: "alac", Size: 301, MTime: 333},
+	}); err != nil {
+		t.Fatalf("UpsertTracks update: %v", err)
+	}
+	tracks, err = db.GetDirectoryFiles(dirID)
+	if err != nil {
+		t.Fatalf("GetDirectoryFiles after update: %v", err)
+	}
+	if len(tracks) != 3 {
+		t.Fatalf("expected 3 tracks after update batch, got %d", len(tracks))
+	}
+	for _, tr := range tracks {
+		if tr.Codec != "alac" {
+			t.Fatalf("track %q not updated: %+v", tr.Filename, tr)
+		}
+	}
+	if tracks[0].MTime != 111 || tracks[0].HasEmbeddedCover {
+		t.Fatalf("01.flac cache fields not updated: %+v", tracks[0])
+	}
+	if !tracks[1].HasEmbeddedCover {
+		t.Fatalf("02.flac has_embedded_cover not updated: %+v", tracks[1])
+	}
+
+	// A batch repeating a filename leaves exactly one row, holding the last value.
+	if err := db.UpsertTracks(dirID, []Track{
+		{Filename: "dup.flac", Codec: "flac", Size: 1},
+		{Filename: "dup.flac", Codec: "flac", Size: 2},
+	}); err != nil {
+		t.Fatalf("UpsertTracks duplicate filename: %v", err)
+	}
+	tracks, _ = db.GetDirectoryFiles(dirID)
+	var dups []Track
+	for _, tr := range tracks {
+		if tr.Filename == "dup.flac" {
+			dups = append(dups, tr)
+		}
+	}
+	if len(dups) != 1 {
+		t.Fatalf("expected 1 row for repeated filename, got %d", len(dups))
+	}
+	if dups[0].Size != 2 {
+		t.Fatalf("repeated filename kept size %d, want 2 (last wins)", dups[0].Size)
+	}
+}
+
+// TestUpsertTracksForeignKeyFailure verifies a batch against an unknown
+// directory fails and writes nothing.
+func TestUpsertTracksForeignKeyFailure(t *testing.T) {
+	db := openMem(t)
+
+	const missingDirID = 424242
+	err := db.UpsertTracks(missingDirID, []Track{
+		{Filename: "01.flac", Codec: "flac"},
+		{Filename: "02.flac", Codec: "flac"},
+	})
+	if err == nil {
+		t.Fatal("expected an error for a non-existent directory ID")
+	}
+
+	tracks, qErr := db.GetDirectoryFiles(missingDirID)
+	if qErr != nil {
+		t.Fatalf("GetDirectoryFiles: %v", qErr)
+	}
+	if len(tracks) != 0 {
+		t.Fatalf("expected no rows after failed batch, got %d", len(tracks))
+	}
+}
+
+// TestUpsertTracksRollsBackPartialBatch verifies a failure partway through a
+// batch discards the rows written before it. The failure is injected with a
+// trigger, since nothing in the schema itself can reject a single valid row.
+func TestUpsertTracksRollsBackPartialBatch(t *testing.T) {
+	db := openMem(t)
+
+	libID, _ := db.UpsertLibrary("rb-lib", "/rb-lib")
+	dirID, _ := db.UpsertDirectory(libID, "dir", "FLAC", false, "")
+
+	db.mu.Lock()
+	_, err := db.sql.Exec(`CREATE TRIGGER reject_boom BEFORE INSERT ON tracks
+		WHEN NEW.filename = 'boom.flac'
+		BEGIN SELECT RAISE(ABORT, 'boom'); END`)
+	db.mu.Unlock()
+	if err != nil {
+		t.Fatalf("create trigger: %v", err)
+	}
+	t.Cleanup(func() {
+		db.mu.Lock()
+		defer db.mu.Unlock()
+		_, _ = db.sql.Exec(`DROP TRIGGER IF EXISTS reject_boom`)
+	})
+
+	if err := db.UpsertTracks(dirID, []Track{
+		{Filename: "01.flac", Codec: "flac"},
+		{Filename: "boom.flac", Codec: "flac"},
+		{Filename: "03.flac", Codec: "flac"},
+	}); err == nil {
+		t.Fatal("expected an error from the rejected row")
+	}
+
+	tracks, err := db.GetDirectoryFiles(dirID)
+	if err != nil {
+		t.Fatalf("GetDirectoryFiles: %v", err)
+	}
+	if len(tracks) != 0 {
+		t.Fatalf("expected the whole batch rolled back, got %d rows: %+v", len(tracks), tracks)
+	}
+}

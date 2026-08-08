@@ -262,27 +262,57 @@ func (db *DB) directoryIDLocked(libraryID int64, path string) (int64, error) {
 	return id, err
 }
 
-// UpsertTrack inserts or updates a track record.
+const upsertTrackSQL = `INSERT INTO tracks(directory_id, filename, codec, bitrate, duration, sample_rate, channels, size, mtime, has_embedded_cover)
+	 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	 ON CONFLICT(directory_id, filename) DO UPDATE SET
+	   codec=excluded.codec,
+	   bitrate=excluded.bitrate,
+	   duration=excluded.duration,
+	   sample_rate=excluded.sample_rate,
+	   channels=excluded.channels,
+	   size=excluded.size,
+	   mtime=excluded.mtime,
+	   has_embedded_cover=excluded.has_embedded_cover`
+
+// UpsertTrack inserts or updates a single track record.
 func (db *DB) UpsertTrack(t Track) error {
+	return db.UpsertTracks(t.DirectoryID, []Track{t})
+}
+
+// UpsertTracks writes all tracks of one directory in a single transaction, so a
+// scanned directory costs one commit instead of one per file. The tracks'
+// DirectoryID field is ignored in favour of the directoryID argument. On error
+// the whole batch is rolled back and no rows are written.
+func (db *DB) UpsertTracks(directoryID int64, tracks []Track) error {
+	if len(tracks) == 0 {
+		return nil
+	}
+
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
-	_, err := db.sql.Exec(
-		`INSERT INTO tracks(directory_id, filename, codec, bitrate, duration, sample_rate, channels, size, mtime, has_embedded_cover)
-		 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		 ON CONFLICT(directory_id, filename) DO UPDATE SET
-		   codec=excluded.codec,
-		   bitrate=excluded.bitrate,
-		   duration=excluded.duration,
-		   sample_rate=excluded.sample_rate,
-		   channels=excluded.channels,
-		   size=excluded.size,
-		   mtime=excluded.mtime,
-		   has_embedded_cover=excluded.has_embedded_cover`,
-		t.DirectoryID, t.Filename, t.Codec, t.Bitrate, t.Duration, t.SampleRate, t.Channels, t.Size, t.MTime, t.HasEmbeddedCover,
-	)
+	tx, err := db.sql.Begin()
 	if err != nil {
-		return fmt.Errorf("upsert track: %w", err)
+		return fmt.Errorf("upsert tracks: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	stmt, err := tx.Prepare(upsertTrackSQL)
+	if err != nil {
+		return fmt.Errorf("upsert tracks: prepare: %w", err)
+	}
+	defer func() { _ = stmt.Close() }()
+
+	for _, t := range tracks {
+		if _, err := stmt.Exec(
+			directoryID, t.Filename, t.Codec, t.Bitrate, t.Duration, t.SampleRate, t.Channels, t.Size, t.MTime, t.HasEmbeddedCover,
+		); err != nil {
+			return fmt.Errorf("upsert track %q: %w", t.Filename, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("upsert tracks: commit: %w", err)
 	}
 	return nil
 }
@@ -550,6 +580,34 @@ func (db *DB) GetDirectoryFiles(directoryID int64) ([]Track, error) {
 			return nil, err
 		}
 		tracks = append(tracks, t)
+	}
+	return tracks, rows.Err()
+}
+
+// GetTracksByDirPath returns the stored tracks of one directory keyed by
+// filename, resolving the directory by library and relative path. An unknown
+// directory yields an empty map, not an error. Read path: no db.mu, like the
+// other Get* methods.
+func (db *DB) GetTracksByDirPath(libraryID int64, path string) (map[string]Track, error) {
+	rows, err := db.sql.Query(
+		`SELECT t.id, t.directory_id, t.filename, t.codec, t.bitrate, t.duration, t.sample_rate, t.channels, t.size, t.mtime, t.has_embedded_cover
+		 FROM tracks t
+		 JOIN directories d ON d.id = t.directory_id
+		 WHERE d.library_id=? AND d.path=?`,
+		libraryID, path,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	tracks := make(map[string]Track)
+	for rows.Next() {
+		var t Track
+		if err := rows.Scan(&t.ID, &t.DirectoryID, &t.Filename, &t.Codec, &t.Bitrate, &t.Duration, &t.SampleRate, &t.Channels, &t.Size, &t.MTime, &t.HasEmbeddedCover); err != nil {
+			return nil, err
+		}
+		tracks[t.Filename] = t
 	}
 	return tracks, rows.Err()
 }
