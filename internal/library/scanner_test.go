@@ -1447,6 +1447,137 @@ func TestScannerFailedProbeRetriedNextScan(t *testing.T) {
 	}
 }
 
+// legacyTracksSchema is the tracks DDL as it was before mtime and
+// has_embedded_cover were added; it backs the upgrade test below.
+const legacyTracksSchema = `
+PRAGMA foreign_keys = ON;
+
+CREATE TABLE libraries (
+	id   INTEGER PRIMARY KEY,
+	name TEXT UNIQUE NOT NULL,
+	path TEXT UNIQUE NOT NULL
+);
+
+CREATE TABLE directories (
+	id            INTEGER PRIMARY KEY,
+	library_id    INTEGER NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
+	path          TEXT NOT NULL,
+	has_cover     BOOLEAN NOT NULL DEFAULT 0,
+	cover_path    TEXT NOT NULL DEFAULT '',
+	codec_summary TEXT NOT NULL DEFAULT '',
+	is_audio      BOOLEAN NOT NULL DEFAULT 0,
+	UNIQUE(library_id, path)
+);
+
+CREATE TABLE tracks (
+	id           INTEGER PRIMARY KEY,
+	directory_id INTEGER NOT NULL REFERENCES directories(id) ON DELETE CASCADE,
+	filename     TEXT NOT NULL,
+	codec        TEXT NOT NULL DEFAULT '',
+	bitrate      INTEGER NOT NULL DEFAULT 0,
+	duration     REAL NOT NULL DEFAULT 0,
+	sample_rate  INTEGER NOT NULL DEFAULT 0,
+	channels     INTEGER NOT NULL DEFAULT 0,
+	size         INTEGER NOT NULL DEFAULT 0,
+	UNIQUE(directory_id, filename)
+);
+`
+
+// TestScannerUpgradedLegacyDBRescansOnceThenCaches is the automated form of the
+// operator upgrade path: a database written by the pre-change schema, already
+// holding a fully indexed directory, must migrate in place, re-probe everything
+// once (the backfilled mtime = 0 can never match a real file), and be probe-free
+// from the second scan on.
+func TestScannerUpgradedLegacyDBRescansOnceThenCaches(t *testing.T) {
+	root := makeTestTree(t, map[string][]string{
+		"Album": {"01.flac", "02.flac"},
+	})
+
+	// Build a legacy database that already describes the tree on disk, sizes
+	// included — so nothing but the missing mtime can force the re-probe.
+	dbPath := filepath.Join(t.TempDir(), "alto.db")
+	raw, err := sql.Open("sqlite", "file:"+dbPath+"?_pragma=foreign_keys(ON)")
+	if err != nil {
+		t.Fatalf("open legacy db: %v", err)
+	}
+	if _, err := raw.Exec(legacyTracksSchema); err != nil {
+		t.Fatalf("exec legacy schema: %v", err)
+	}
+	if _, err := raw.Exec(`INSERT INTO libraries(id, name, path) VALUES(1, 'test', ?)`, root); err != nil {
+		t.Fatalf("insert legacy library: %v", err)
+	}
+	if _, err := raw.Exec(
+		`INSERT INTO directories(id, library_id, path, codec_summary, is_audio) VALUES(1, 1, 'Album', 'FLAC', 1)`,
+	); err != nil {
+		t.Fatalf("insert legacy directory: %v", err)
+	}
+	for _, name := range []string{"01.flac", "02.flac"} {
+		fi, statErr := os.Stat(filepath.Join(root, "Album", name))
+		if statErr != nil {
+			t.Fatal(statErr)
+		}
+		if _, err := raw.Exec(
+			`INSERT INTO tracks(directory_id, filename, codec, bitrate, duration, sample_rate, channels, size)
+			 VALUES(1, ?, 'flac', 900000, 61.5, 44100, 2, ?)`,
+			name, fi.Size(),
+		); err != nil {
+			t.Fatalf("insert legacy track %s: %v", name, err)
+		}
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatalf("close legacy db: %v", err)
+	}
+
+	database, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open migrated db: %v", err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+
+	prober := &mockProber{
+		defaultResult: &TrackInfo{Codec: "flac", Bitrate: 900000, Duration: 61.5, SampleRate: 44100, Channels: 2, HasCover: true},
+	}
+	// Pre-create the extracted-cover cache file so the embedded-art path resolves
+	// without shelling out to ffmpeg.
+	cacheDir := t.TempDir()
+	cacheFile := coverCachePath(cacheDir, 1, "Album")
+	if err := os.MkdirAll(filepath.Dir(cacheFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cacheFile, []byte("jpeg"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := NewScanner(database, prober, ScanConfig{CacheDir: cacheDir})
+	lib := db.Library{ID: 1, Name: "test", Path: root}
+
+	if err := s.Scan(context.Background(), lib); err != nil {
+		t.Fatalf("first Scan after upgrade: %v", err)
+	}
+	if got := prober.total(); got != 2 {
+		t.Fatalf("first scan after upgrade probes: got %d want 2 (a full re-probe)", got)
+	}
+
+	stored := tracksByName(t, database, 1, "Album")
+	if len(stored) != 2 {
+		t.Fatalf("expected 2 tracks after upgrade scan, got %d", len(stored))
+	}
+	for name, tr := range stored {
+		if tr.MTime == 0 {
+			t.Errorf("%s: MTime not backfilled by the upgrade scan", name)
+		}
+		if !tr.HasEmbeddedCover {
+			t.Errorf("%s: HasEmbeddedCover not backfilled by the upgrade scan", name)
+		}
+	}
+
+	if err := s.Scan(context.Background(), lib); err != nil {
+		t.Fatalf("second Scan after upgrade: %v", err)
+	}
+	if got := prober.total(); got != 2 {
+		t.Errorf("second scan after upgrade spawned %d extra probes, want 0", got-2)
+	}
+}
+
 // TestScannerSkipsTrackWritesForUnchangedDirectory verifies a warm rescan of an
 // untouched directory issues no track writes at all — the point of the cache is
 // lost if every rescan still upserts every row.
