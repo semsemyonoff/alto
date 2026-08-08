@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -26,9 +27,16 @@ type mockProber struct {
 	// hook, if set, runs before each probe. It lets a test mutate the tree
 	// between the walk and a later directory's probe.
 	hook func(path string)
+	// delay is how long every probe blocks; delays overrides it per path. Both
+	// exist to make concurrent probes actually overlap in wall-clock time.
+	delay  time.Duration
+	delays map[string]time.Duration
 
 	mu    sync.Mutex
 	calls map[string]int
+
+	inFlight atomic.Int32
+	peak     atomic.Int32
 }
 
 // count returns how many times path was probed.
@@ -49,14 +57,35 @@ func (m *mockProber) total() int {
 	return n
 }
 
+// peakInFlight returns the highest number of probes observed running at once.
+func (m *mockProber) peakInFlight() int {
+	return int(m.peak.Load())
+}
+
 func (m *mockProber) Probe(_ context.Context, path string) (*TrackInfo, error) {
 	m.mu.Lock()
 	if m.calls == nil {
 		m.calls = make(map[string]int)
 	}
 	m.calls[path]++
+	delay := m.delay
+	if d, ok := m.delays[path]; ok {
+		delay = d
+	}
 	m.mu.Unlock()
 
+	cur := m.inFlight.Add(1)
+	defer m.inFlight.Add(-1)
+	for {
+		seen := m.peak.Load()
+		if cur <= seen || m.peak.CompareAndSwap(seen, cur) {
+			break
+		}
+	}
+
+	if delay > 0 {
+		time.Sleep(delay)
+	}
 	if m.hook != nil {
 		m.hook(path)
 	}
@@ -1537,6 +1566,241 @@ func TestScannerWritesDirectoryWithChangedFileSet(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestDefaultScanWorkers verifies the computed default and the normalisation of
+// unset/negative worker counts in NewScanner.
+func TestDefaultScanWorkers(t *testing.T) {
+	def := DefaultScanWorkers()
+	if def < 1 || def > 4 {
+		t.Fatalf("DefaultScanWorkers() = %d, want between 1 and 4", def)
+	}
+
+	tests := []struct {
+		name    string
+		workers int
+		want    int
+	}{
+		{"unset", 0, def},
+		{"negative", -3, def},
+		{"explicit", 2, 2},
+		{"above default", 16, 16},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := NewScanner(openTestDB(t), &mockProber{}, ScanConfig{Workers: tc.workers})
+			if got := cap(s.sem); got != tc.want {
+				t.Errorf("semaphore capacity: got %d want %d", got, tc.want)
+			}
+			if got := s.cfg.Workers; got != tc.want {
+				t.Errorf("cfg.Workers: got %d want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestScannerProbeConcurrencyBounded verifies that concurrent probes never
+// exceed the configured worker count, and that they do overlap at all.
+func TestScannerProbeConcurrencyBounded(t *testing.T) {
+	const workers = 2
+	files := []string{"01.flac", "02.flac", "03.flac", "04.flac", "05.flac", "06.flac", "07.flac", "08.flac"}
+	root := makeTestTree(t, map[string][]string{"Album": files})
+
+	database := openTestDB(t)
+	libID, err := database.UpsertLibrary("test", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Each probe blocks long enough that a second one is guaranteed to start
+	// while it runs, so the peak is a real observation and not a scheduling fluke.
+	prober := &mockProber{delay: 20 * time.Millisecond}
+	s := NewScanner(database, prober, ScanConfig{CacheDir: t.TempDir(), Workers: workers})
+	lib := db.Library{ID: libID, Name: "test", Path: root}
+	if err := s.Scan(context.Background(), lib); err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+
+	if got := prober.peakInFlight(); got > workers {
+		t.Errorf("peak concurrent probes: got %d, want at most %d", got, workers)
+	} else if got < workers {
+		t.Errorf("peak concurrent probes: got %d, probes never ran in parallel", got)
+	}
+	if got := prober.total(); got != len(files) {
+		t.Errorf("probes: got %d want %d", got, len(files))
+	}
+	if got := tracksByName(t, database, libID, "Album"); len(got) != len(files) {
+		t.Errorf("stored tracks: got %d want %d", len(got), len(files))
+	}
+}
+
+// TestScannerTrackOrderIndependentOfProbeOrder verifies that tracks are written
+// in directory order even when probes finish in the opposite order, and that
+// each row keeps the metadata of its own file.
+func TestScannerTrackOrderIndependentOfProbeOrder(t *testing.T) {
+	root := makeTestTree(t, map[string][]string{
+		"Album": {"01.flac", "02.flac", "03.flac"},
+	})
+
+	database := openTestDB(t)
+	libID, err := database.UpsertLibrary("test", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dirPath := filepath.Join(root, "Album")
+	path := func(name string) string { return filepath.Join(dirPath, name) }
+
+	// Completion order is the reverse of the directory order.
+	prober := &mockProber{
+		delays: map[string]time.Duration{
+			path("01.flac"): 60 * time.Millisecond,
+			path("02.flac"): 30 * time.Millisecond,
+			path("03.flac"): 0,
+		},
+		results: map[string]*TrackInfo{
+			path("01.flac"): {Codec: "flac", Bitrate: 900000, Duration: 1, SampleRate: 44100, Channels: 2},
+			path("02.flac"): {Codec: "mp3", Bitrate: 320000, Duration: 2, SampleRate: 48000, Channels: 1},
+			path("03.flac"): {Codec: "opus", Bitrate: 128000, Duration: 3, SampleRate: 48000, Channels: 2},
+		},
+	}
+
+	s := NewScanner(database, prober, ScanConfig{CacheDir: t.TempDir(), Workers: 3})
+	lib := db.Library{ID: libID, Name: "test", Path: root}
+	if err := s.Scan(context.Background(), lib); err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+
+	dir, err := database.GetDirectoryByPath(libID, "Album")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tracks, err := database.GetDirectoryFiles(dir.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tracks) != 3 {
+		t.Fatalf("expected 3 tracks, got %d", len(tracks))
+	}
+
+	// GetDirectoryFiles sorts by filename, so ascending ids mean the rows were
+	// inserted in directory order rather than in probe completion order.
+	for i := 1; i < len(tracks); i++ {
+		if tracks[i].ID <= tracks[i-1].ID {
+			t.Errorf("insert order: %s (id %d) written after %s (id %d)",
+				tracks[i-1].Filename, tracks[i-1].ID, tracks[i].Filename, tracks[i].ID)
+		}
+	}
+
+	wantCodec := map[string]string{"01.flac": "flac", "02.flac": "mp3", "03.flac": "opus"}
+	for _, tr := range tracks {
+		if got := tr.Codec; got != wantCodec[tr.Filename] {
+			t.Errorf("%s: codec = %q, want %q", tr.Filename, got, wantCodec[tr.Filename])
+		}
+	}
+	if dir.CodecSummary != "Mixed" {
+		t.Errorf("CodecSummary: got %q want %q", dir.CodecSummary, "Mixed")
+	}
+}
+
+// TestScannerNoBlankRowForFileDeletedMidScan verifies that a file which vanishes
+// after the walk listed it is dropped from the batch instead of being written as
+// an empty row at its slot in the index-addressed result slice.
+func TestScannerNoBlankRowForFileDeletedMidScan(t *testing.T) {
+	root := makeTestTree(t, map[string][]string{
+		"A-Album": {"a.flac"},
+		"B-Album": {"01.flac", "02.flac", "03.flac"},
+	})
+
+	database := openTestDB(t)
+	libID, err := database.UpsertLibrary("test", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Directories are processed in sorted order, so removing B-Album's middle
+	// file while A-Album is being probed drops it after the walk listed it.
+	victim := filepath.Join(root, "B-Album", "02.flac")
+	prober := &mockProber{hook: func(string) { _ = os.Remove(victim) }}
+
+	s := NewScanner(database, prober, ScanConfig{CacheDir: t.TempDir(), Workers: 4})
+	lib := db.Library{ID: libID, Name: "test", Path: root}
+	if err := s.Scan(context.Background(), lib); err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+
+	stored := tracksByName(t, database, libID, "B-Album")
+	if len(stored) != 2 {
+		t.Fatalf("stored tracks: got %d (%v) want 2", len(stored), stored)
+	}
+	for _, name := range []string{"01.flac", "03.flac"} {
+		if _, ok := stored[name]; !ok {
+			t.Errorf("%s: missing from the DB", name)
+		}
+	}
+	if _, ok := stored[""]; ok {
+		t.Error("a blank row was written for the deleted file")
+	}
+}
+
+// TestScannerCanceledScanKeepsIndexedDirectory verifies that cancelling mid-probe
+// aborts the scan and leaves the previously indexed rows untouched, rather than
+// writing the partial result of the interrupted directory.
+func TestScannerCanceledScanKeepsIndexedDirectory(t *testing.T) {
+	root := makeTestTree(t, map[string][]string{
+		"Album": {"01.flac", "02.flac", "03.flac"},
+	})
+
+	database := openTestDB(t)
+	libID, err := database.UpsertLibrary("test", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first := &mockProber{defaultResult: &TrackInfo{Codec: "flac", Bitrate: 900000, Duration: 61.5, SampleRate: 44100, Channels: 2}}
+	lib := db.Library{ID: libID, Name: "test", Path: root}
+	if err := NewScanner(database, first, ScanConfig{CacheDir: t.TempDir()}).Scan(context.Background(), lib); err != nil {
+		t.Fatalf("first Scan: %v", err)
+	}
+	before := tracksByName(t, database, libID, "Album")
+	if len(before) != 3 {
+		t.Fatalf("expected 3 tracks after the first scan, got %d", len(before))
+	}
+
+	// Invalidate the cache so the second scan actually probes, then cancel on the
+	// first probe it issues.
+	distant := time.Now().Add(-72 * time.Hour)
+	for name := range before {
+		if err := os.Chtimes(filepath.Join(root, "Album", name), distant, distant); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	second := &mockProber{
+		defaultResult: &TrackInfo{Codec: "mp3", Bitrate: 128000, Duration: 1, SampleRate: 8000, Channels: 1},
+		hook:          func(string) { cancel() },
+	}
+
+	s := NewScanner(database, second, ScanConfig{CacheDir: t.TempDir(), Workers: 1})
+	err = s.Scan(ctx, lib)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Scan after cancel: got %v, want context.Canceled", err)
+	}
+	if got := second.total(); got > 3 {
+		t.Errorf("scan kept probing after cancel: %d probes", got)
+	}
+
+	after := tracksByName(t, database, libID, "Album")
+	if len(after) != len(before) {
+		t.Fatalf("track count changed: %d -> %d", len(before), len(after))
+	}
+	for name, want := range before {
+		if got := after[name]; got != want {
+			t.Errorf("%s: row clobbered by the canceled scan\n got %+v\nwant %+v", name, got, want)
+		}
 	}
 }
 

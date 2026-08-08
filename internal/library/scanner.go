@@ -10,9 +10,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/semsemyonoff/ALTO/internal/db"
 	"github.com/semsemyonoff/ALTO/internal/transcode"
@@ -47,6 +49,16 @@ type ScanConfig struct {
 	OutputDir string
 	// CacheDir is the directory for app-managed files (extracted cover art).
 	CacheDir string
+	// Workers caps the number of concurrent probes across all libraries.
+	// Values <= 0 mean DefaultScanWorkers().
+	Workers int
+}
+
+// DefaultScanWorkers returns the probe concurrency used when none is configured.
+// Probing is process-spawn bound, so a small multiple of the available cores is
+// enough to keep them busy without flooding the machine with ffprobe children.
+func DefaultScanWorkers() int {
+	return min(4, runtime.NumCPU())
 }
 
 // Scanner walks library directories, extracts metadata, and stores results in DB.
@@ -54,6 +66,9 @@ type Scanner struct {
 	db     *db.DB
 	prober Prober
 	cfg    ScanConfig
+	// sem bounds concurrent probes; it is shared by every library scanned by
+	// this Scanner, so ScanAll cannot multiply the configured worker count.
+	sem chan struct{}
 }
 
 // NewScanner constructs a Scanner with the given DB, prober, and config.
@@ -61,7 +76,15 @@ func NewScanner(database *db.DB, prober Prober, cfg ScanConfig) *Scanner {
 	if prober == nil {
 		prober = &FFProber{}
 	}
-	return &Scanner{db: database, prober: prober, cfg: cfg}
+	if cfg.Workers <= 0 {
+		cfg.Workers = DefaultScanWorkers()
+	}
+	return &Scanner{
+		db:     database,
+		prober: prober,
+		cfg:    cfg,
+		sem:    make(chan struct{}, cfg.Workers),
+	}
 }
 
 // ScanAll scans all provided libraries in parallel. If progress is non-nil, it is
@@ -239,6 +262,13 @@ func (s *Scanner) scan(ctx context.Context, lib db.Library, progress func(discov
 		// Probe before resolving the cover: resolveCover reads the embedded-art
 		// flag off an already-probed track instead of probing the first file again.
 		tracks, allCached := s.probeFiles(ctx, info.absPath, audioFiles, cached)
+
+		// A cancellation during probing leaves tracks incomplete — writing it
+		// would replace an already-indexed directory with zeroed metadata.
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
 		coverPath, hasCover := s.resolveCover(ctx, info.absPath, tracks, lib.ID, rel)
 		codecSummary := buildCodecSummary(tracks)
 
@@ -374,60 +404,96 @@ func (s *Scanner) resolveCover(ctx context.Context, dirPath string, tracks []db.
 }
 
 // probeFiles returns a Track record per audio file, running ffprobe only on the
-// files whose size and mtime differ from the cached row of the same name. The
-// second return value reports whether every returned track came from the cache,
-// i.e. whether no file was probed.
+// files whose size and mtime differ from the cached row of the same name. Files
+// are handled concurrently, bounded by the scanner-wide worker semaphore, but
+// the returned tracks keep the order of audioFiles. The second return value
+// reports whether every returned track came from the cache, i.e. whether no file
+// was probed.
 func (s *Scanner) probeFiles(ctx context.Context, dirPath string, audioFiles []string, cached map[string]db.Track) ([]db.Track, bool) {
-	tracks := make([]db.Track, 0, len(audioFiles))
-	allCached := true
-	for _, name := range audioFiles {
-		fullPath := filepath.Join(dirPath, name)
-		before, err := os.Stat(fullPath)
-		if err != nil {
-			slog.Warn("stat audio file", "path", fullPath, "err", err)
-			continue
-		}
+	// Index-addressed so probe completion order cannot reorder the directory;
+	// a nil entry is a file with no row to write (vanished, or scan canceled).
+	results := make([]*db.Track, len(audioFiles))
+	var probed atomic.Bool
+	var wg sync.WaitGroup
 
-		// MTime 0 marks a row whose metadata could not be trusted (migrated,
-		// failed probe, or a file that changed mid-scan) and never counts as a hit.
-		if prev, ok := cached[name]; ok && prev.MTime != 0 &&
-			prev.Size == before.Size() && prev.MTime == before.ModTime().UnixNano() {
-			tracks = append(tracks, prev)
-			continue
-		}
-
-		allCached = false
-		t := db.Track{
-			Filename: name,
-			Size:     before.Size(),
-			MTime:    before.ModTime().UnixNano(),
-		}
-
-		info, probeErr := s.prober.Probe(ctx, fullPath)
-		if probeErr != nil {
-			slog.Warn("ffprobe", "file", fullPath, "err", probeErr)
-			t.MTime = 0
-		} else {
-			t.Codec = info.Codec
-			t.Bitrate = info.Bitrate
-			t.Duration = info.Duration
-			t.SampleRate = info.SampleRate
-			t.Channels = info.Channels
-			t.HasEmbeddedCover = info.HasCover
-
-			// The file may have been rewritten while ffprobe ran; pinning the new
-			// (size, mtime) against the old file's metadata would cache it forever.
-			after, statErr := os.Stat(fullPath)
-			if statErr != nil || after.Size() != before.Size() || !after.ModTime().Equal(before.ModTime()) {
-				t.MTime = 0
-			} else {
-				t.Size = after.Size()
-				t.MTime = after.ModTime().UnixNano()
+	for i, name := range audioFiles {
+		wg.Go(func() {
+			select {
+			case s.sem <- struct{}{}:
+			case <-ctx.Done():
+				return
 			}
-		}
-		tracks = append(tracks, t)
+			defer func() { <-s.sem }()
+
+			t, hit, ok := s.probeFile(ctx, dirPath, name, cached)
+			if !ok {
+				return
+			}
+			if !hit {
+				probed.Store(true)
+			}
+			results[i] = &t
+		})
 	}
-	return tracks, allCached
+	wg.Wait()
+
+	tracks := make([]db.Track, 0, len(audioFiles))
+	for _, t := range results {
+		if t != nil {
+			tracks = append(tracks, *t)
+		}
+	}
+	return tracks, !probed.Load()
+}
+
+// probeFile builds the Track record of a single audio file, reusing the cached
+// row when the file still matches it. hit reports a cache hit (no process
+// spawned); ok is false when the file cannot be stat'd and therefore has no row.
+func (s *Scanner) probeFile(ctx context.Context, dirPath, name string, cached map[string]db.Track) (track db.Track, hit bool, ok bool) {
+	fullPath := filepath.Join(dirPath, name)
+	before, err := os.Stat(fullPath)
+	if err != nil {
+		slog.Warn("stat audio file", "path", fullPath, "err", err)
+		return db.Track{}, false, false
+	}
+
+	// MTime 0 marks a row whose metadata could not be trusted (migrated, failed
+	// probe, or a file that changed mid-scan) and never counts as a hit.
+	if prev, cachedOK := cached[name]; cachedOK && prev.MTime != 0 &&
+		prev.Size == before.Size() && prev.MTime == before.ModTime().UnixNano() {
+		return prev, true, true
+	}
+
+	t := db.Track{
+		Filename: name,
+		Size:     before.Size(),
+		MTime:    before.ModTime().UnixNano(),
+	}
+
+	info, probeErr := s.prober.Probe(ctx, fullPath)
+	if probeErr != nil {
+		slog.Warn("ffprobe", "file", fullPath, "err", probeErr)
+		t.MTime = 0
+		return t, false, true
+	}
+
+	t.Codec = info.Codec
+	t.Bitrate = info.Bitrate
+	t.Duration = info.Duration
+	t.SampleRate = info.SampleRate
+	t.Channels = info.Channels
+	t.HasEmbeddedCover = info.HasCover
+
+	// The file may have been rewritten while ffprobe ran; pinning the new
+	// (size, mtime) against the old file's metadata would cache it forever.
+	after, statErr := os.Stat(fullPath)
+	if statErr != nil || after.Size() != before.Size() || !after.ModTime().Equal(before.ModTime()) {
+		t.MTime = 0
+	} else {
+		t.Size = after.Size()
+		t.MTime = after.ModTime().UnixNano()
+	}
+	return t, false, true
 }
 
 // tracksMatchCache reports whether tracks is exactly the set of stored rows in
