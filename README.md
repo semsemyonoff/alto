@@ -77,6 +77,7 @@ All configuration is via environment variables.
 | `ALTO_CACHE_DIR` | `./cache` | App-managed cache for extracted cover art — keep separate from library mounts |
 | `ALTO_TRANSCODE_WORKERS` | `1` | Number of concurrent transcode jobs; additional jobs sit `queued` until a worker is free |
 | `ALTO_SCAN_ON_START` | `true` | Run a full library re-index at startup. Set to `false` on large libraries where re-indexing on every restart is too expensive — the UI's re-index button and `POST /api/scan` still work |
+| `ALTO_SCAN_WORKERS` | `0` (auto) | Maximum concurrent `ffprobe` processes during a scan, across all libraries. `0` picks the built-in default, `min(4, NumCPU)` |
 
 ## Running It
 
