@@ -46,6 +46,10 @@ type Track struct {
 	SampleRate  int64
 	Channels    int64
 	Size        int64
+	// MTime is the file modification time in Unix nanoseconds. Together with
+	// Size it is the scanner's cache key; 0 means unknown and forces a re-probe.
+	MTime            int64
+	HasEmbeddedCover bool
 }
 
 const schema = `
@@ -78,6 +82,8 @@ CREATE TABLE IF NOT EXISTS tracks (
 	sample_rate  INTEGER NOT NULL DEFAULT 0,
 	channels     INTEGER NOT NULL DEFAULT 0,
 	size         INTEGER NOT NULL DEFAULT 0,
+	mtime        INTEGER NOT NULL DEFAULT 0,
+	has_embedded_cover BOOLEAN NOT NULL DEFAULT 0,
 	UNIQUE(directory_id, filename)
 );
 `
@@ -130,6 +136,22 @@ func (db *DB) migrate() error {
 		"directories",
 		"is_audio",
 		`ALTER TABLE directories ADD COLUMN is_audio BOOLEAN NOT NULL DEFAULT 0`,
+	); err != nil {
+		return err
+	}
+	// Backfilled rows get mtime = 0, which never matches a real file's mtime, so
+	// the first scan after upgrade re-probes everything and repopulates both.
+	if err := db.ensureColumnLocked(
+		"tracks",
+		"mtime",
+		`ALTER TABLE tracks ADD COLUMN mtime INTEGER NOT NULL DEFAULT 0`,
+	); err != nil {
+		return err
+	}
+	if err := db.ensureColumnLocked(
+		"tracks",
+		"has_embedded_cover",
+		`ALTER TABLE tracks ADD COLUMN has_embedded_cover BOOLEAN NOT NULL DEFAULT 0`,
 	); err != nil {
 		return err
 	}
@@ -246,16 +268,18 @@ func (db *DB) UpsertTrack(t Track) error {
 	defer db.mu.Unlock()
 
 	_, err := db.sql.Exec(
-		`INSERT INTO tracks(directory_id, filename, codec, bitrate, duration, sample_rate, channels, size)
-		 VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO tracks(directory_id, filename, codec, bitrate, duration, sample_rate, channels, size, mtime, has_embedded_cover)
+		 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(directory_id, filename) DO UPDATE SET
 		   codec=excluded.codec,
 		   bitrate=excluded.bitrate,
 		   duration=excluded.duration,
 		   sample_rate=excluded.sample_rate,
 		   channels=excluded.channels,
-		   size=excluded.size`,
-		t.DirectoryID, t.Filename, t.Codec, t.Bitrate, t.Duration, t.SampleRate, t.Channels, t.Size,
+		   size=excluded.size,
+		   mtime=excluded.mtime,
+		   has_embedded_cover=excluded.has_embedded_cover`,
+		t.DirectoryID, t.Filename, t.Codec, t.Bitrate, t.Duration, t.SampleRate, t.Channels, t.Size, t.MTime, t.HasEmbeddedCover,
 	)
 	if err != nil {
 		return fmt.Errorf("upsert track: %w", err)
@@ -510,7 +534,7 @@ func (db *DB) GetDirectoryByPath(libraryID int64, path string) (*Directory, erro
 // GetDirectoryFiles returns all tracks in a directory.
 func (db *DB) GetDirectoryFiles(directoryID int64) ([]Track, error) {
 	rows, err := db.sql.Query(
-		`SELECT id, directory_id, filename, codec, bitrate, duration, sample_rate, channels, size
+		`SELECT id, directory_id, filename, codec, bitrate, duration, sample_rate, channels, size, mtime, has_embedded_cover
 		 FROM tracks WHERE directory_id=? ORDER BY filename`,
 		directoryID,
 	)
@@ -522,7 +546,7 @@ func (db *DB) GetDirectoryFiles(directoryID int64) ([]Track, error) {
 	var tracks []Track
 	for rows.Next() {
 		var t Track
-		if err := rows.Scan(&t.ID, &t.DirectoryID, &t.Filename, &t.Codec, &t.Bitrate, &t.Duration, &t.SampleRate, &t.Channels, &t.Size); err != nil {
+		if err := rows.Scan(&t.ID, &t.DirectoryID, &t.Filename, &t.Codec, &t.Bitrate, &t.Duration, &t.SampleRate, &t.Channels, &t.Size, &t.MTime, &t.HasEmbeddedCover); err != nil {
 			return nil, err
 		}
 		tracks = append(tracks, t)

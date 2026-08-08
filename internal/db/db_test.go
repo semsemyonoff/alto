@@ -1,7 +1,9 @@
 package db
 
 import (
+	"database/sql"
 	"fmt"
+	"path/filepath"
 	"sync"
 	"testing"
 )
@@ -531,4 +533,244 @@ func TestForeignKeyConstraint(t *testing.T) {
 	if len(tracks) != 0 {
 		t.Fatalf("expected 0 tracks after cascade delete, got %d", len(tracks))
 	}
+}
+
+// TestUpsertTrackCacheFields verifies MTime and HasEmbeddedCover round-trip
+// through UpsertTrack -> GetDirectoryFiles on both the insert and update paths.
+func TestUpsertTrackCacheFields(t *testing.T) {
+	db := openMem(t)
+
+	libID, _ := db.UpsertLibrary("lib", "/lib")
+	dirID, _ := db.UpsertDirectory(libID, "dir", "FLAC", false, "")
+
+	track := Track{
+		DirectoryID:      dirID,
+		Filename:         "01.flac",
+		Codec:            "flac",
+		Size:             30000000,
+		MTime:            1_700_000_000_123_456_789,
+		HasEmbeddedCover: true,
+	}
+	if err := db.UpsertTrack(track); err != nil {
+		t.Fatalf("UpsertTrack insert: %v", err)
+	}
+
+	tracks, err := db.GetDirectoryFiles(dirID)
+	if err != nil {
+		t.Fatalf("GetDirectoryFiles: %v", err)
+	}
+	if len(tracks) != 1 {
+		t.Fatalf("expected 1 track, got %d", len(tracks))
+	}
+	if tracks[0].MTime != track.MTime {
+		t.Fatalf("mtime after insert = %d, want %d", tracks[0].MTime, track.MTime)
+	}
+	if !tracks[0].HasEmbeddedCover {
+		t.Fatal("has_embedded_cover after insert = false, want true")
+	}
+
+	// Update path: both fields must be overwritten, including true -> false.
+	track.MTime = 1_800_000_000_987_654_321
+	track.HasEmbeddedCover = false
+	if err := db.UpsertTrack(track); err != nil {
+		t.Fatalf("UpsertTrack update: %v", err)
+	}
+
+	tracks, err = db.GetDirectoryFiles(dirID)
+	if err != nil {
+		t.Fatalf("GetDirectoryFiles after update: %v", err)
+	}
+	if len(tracks) != 1 {
+		t.Fatalf("expected 1 track after update, got %d", len(tracks))
+	}
+	if tracks[0].MTime != track.MTime {
+		t.Fatalf("mtime after update = %d, want %d", tracks[0].MTime, track.MTime)
+	}
+	if tracks[0].HasEmbeddedCover {
+		t.Fatal("has_embedded_cover after update = true, want false")
+	}
+}
+
+// legacySchema is the tracks/directories/libraries DDL as it stood before the
+// mtime / has_embedded_cover columns were added.
+const legacySchema = `
+PRAGMA foreign_keys = ON;
+
+CREATE TABLE libraries (
+	id   INTEGER PRIMARY KEY,
+	name TEXT UNIQUE NOT NULL,
+	path TEXT UNIQUE NOT NULL
+);
+
+CREATE TABLE directories (
+	id            INTEGER PRIMARY KEY,
+	library_id    INTEGER NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
+	path          TEXT NOT NULL,
+	has_cover     BOOLEAN NOT NULL DEFAULT 0,
+	cover_path    TEXT NOT NULL DEFAULT '',
+	codec_summary TEXT NOT NULL DEFAULT '',
+	is_audio      BOOLEAN NOT NULL DEFAULT 0,
+	UNIQUE(library_id, path)
+);
+
+CREATE TABLE tracks (
+	id           INTEGER PRIMARY KEY,
+	directory_id INTEGER NOT NULL REFERENCES directories(id) ON DELETE CASCADE,
+	filename     TEXT NOT NULL,
+	codec        TEXT NOT NULL DEFAULT '',
+	bitrate      INTEGER NOT NULL DEFAULT 0,
+	duration     REAL NOT NULL DEFAULT 0,
+	sample_rate  INTEGER NOT NULL DEFAULT 0,
+	channels     INTEGER NOT NULL DEFAULT 0,
+	size         INTEGER NOT NULL DEFAULT 0,
+	UNIQUE(directory_id, filename)
+);
+`
+
+// writeLegacyDB creates a file database with the pre-change schema holding one
+// library, one directory and one track, and returns its path.
+func writeLegacyDB(t *testing.T) string {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "legacy.db")
+	raw, err := sql.Open("sqlite", "file:"+path+"?_pragma=foreign_keys(ON)")
+	if err != nil {
+		t.Fatalf("open legacy db: %v", err)
+	}
+	defer func() { _ = raw.Close() }()
+
+	if _, err := raw.Exec(legacySchema); err != nil {
+		t.Fatalf("exec legacy schema: %v", err)
+	}
+	if _, err := raw.Exec(`INSERT INTO libraries(id, name, path) VALUES(1, 'lib', '/lib')`); err != nil {
+		t.Fatalf("insert legacy library: %v", err)
+	}
+	if _, err := raw.Exec(`INSERT INTO directories(id, library_id, path, codec_summary) VALUES(1, 1, 'albums/X', 'FLAC')`); err != nil {
+		t.Fatalf("insert legacy directory: %v", err)
+	}
+	if _, err := raw.Exec(
+		`INSERT INTO tracks(id, directory_id, filename, codec, bitrate, duration, sample_rate, channels, size)
+		 VALUES(1, 1, '01.flac', 'flac', 900000, 240.5, 44100, 2, 30000000)`,
+	); err != nil {
+		t.Fatalf("insert legacy track: %v", err)
+	}
+	return path
+}
+
+// TestMigrateLegacyTracksSchema verifies an existing database without the new
+// track columns migrates in place, keeps its rows, and reports the neutral
+// defaults that force a full re-probe on the first scan after upgrade.
+func TestMigrateLegacyTracksSchema(t *testing.T) {
+	path := writeLegacyDB(t)
+
+	database, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open legacy db: %v", err)
+	}
+	defer func() { _ = database.Close() }()
+
+	cols := trackColumns(t, database)
+	for _, want := range []string{"mtime", "has_embedded_cover"} {
+		if _, ok := cols[want]; !ok {
+			t.Fatalf("column %q missing after migration; got %v", want, cols)
+		}
+	}
+
+	tracks, err := database.GetDirectoryFiles(1)
+	if err != nil {
+		t.Fatalf("GetDirectoryFiles: %v", err)
+	}
+	if len(tracks) != 1 {
+		t.Fatalf("expected the legacy row to survive, got %d tracks", len(tracks))
+	}
+	if tracks[0].Filename != "01.flac" || tracks[0].Codec != "flac" || tracks[0].Size != 30000000 {
+		t.Fatalf("legacy row corrupted: %+v", tracks[0])
+	}
+	if tracks[0].MTime != 0 {
+		t.Fatalf("migrated mtime = %d, want 0", tracks[0].MTime)
+	}
+	if tracks[0].HasEmbeddedCover {
+		t.Fatal("migrated has_embedded_cover = true, want false")
+	}
+}
+
+// TestMigrateLegacyTracksSchemaIsIdempotent verifies reopening an
+// already-migrated database is a no-op: ensureColumnLocked early-returns rather
+// than re-running the ALTER, and the data is untouched.
+func TestMigrateLegacyTracksSchemaIsIdempotent(t *testing.T) {
+	path := writeLegacyDB(t)
+
+	first, err := Open(path)
+	if err != nil {
+		t.Fatalf("first Open: %v", err)
+	}
+	before := trackColumns(t, first)
+	// Write a real mtime so a re-run of the ALTER (which would reset the column
+	// to its default) is observable.
+	if err := first.UpsertTrack(Track{
+		DirectoryID:      1,
+		Filename:         "01.flac",
+		Codec:            "flac",
+		Size:             30000000,
+		MTime:            1_700_000_000_000_000_001,
+		HasEmbeddedCover: true,
+	}); err != nil {
+		t.Fatalf("UpsertTrack: %v", err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("close first: %v", err)
+	}
+
+	second, err := Open(path)
+	if err != nil {
+		t.Fatalf("second Open: %v", err)
+	}
+	defer func() { _ = second.Close() }()
+
+	after := trackColumns(t, second)
+	if len(after) != len(before) {
+		t.Fatalf("column set changed on reopen: %v -> %v", before, after)
+	}
+
+	tracks, err := second.GetDirectoryFiles(1)
+	if err != nil {
+		t.Fatalf("GetDirectoryFiles: %v", err)
+	}
+	if len(tracks) != 1 {
+		t.Fatalf("expected 1 track after reopen, got %d", len(tracks))
+	}
+	if tracks[0].MTime != 1_700_000_000_000_000_001 || !tracks[0].HasEmbeddedCover {
+		t.Fatalf("reopen clobbered cache fields: %+v", tracks[0])
+	}
+}
+
+// trackColumns returns the column names of the tracks table.
+func trackColumns(t *testing.T, database *DB) map[string]struct{} {
+	t.Helper()
+
+	rows, err := database.sql.Query(`PRAGMA table_info(tracks)`)
+	if err != nil {
+		t.Fatalf("PRAGMA table_info(tracks): %v", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	cols := make(map[string]struct{})
+	for rows.Next() {
+		var (
+			cid        int
+			name       string
+			colType    string
+			notNull    int
+			defaultV   any
+			primaryKey int
+		)
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &defaultV, &primaryKey); err != nil {
+			t.Fatalf("scan table_info: %v", err)
+		}
+		cols[name] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("table_info rows: %v", err)
+	}
+	return cols
 }
