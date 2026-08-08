@@ -28,6 +28,7 @@ type Config struct {
 	DBPath      string
 	CacheDir    string
 	Workers     int
+	ScanWorkers int
 	ScanOnStart bool
 }
 
@@ -63,6 +64,17 @@ func ParseConfig() (*Config, error) {
 		workers = 1
 	}
 	cfg.Workers = workers
+
+	// 0 means "let the scanner pick its own default"; negatives are clamped to
+	// that same 0 rather than to 1, since the default is computed, not constant.
+	scanWorkers, err := getEnvIntDefault("ALTO_SCAN_WORKERS", 0)
+	if err != nil {
+		return nil, err
+	}
+	if scanWorkers < 0 {
+		scanWorkers = 0
+	}
+	cfg.ScanWorkers = scanWorkers
 
 	scanOnStart, err := getEnvBoolDefault("ALTO_SCAN_ON_START", true)
 	if err != nil {
@@ -146,6 +158,15 @@ func getEnvIntDefault(key string, def int) (int, error) {
 	return n, nil
 }
 
+// effectiveScanWorkers resolves a configured scan worker count to the value the
+// scanner will actually use, so the startup log matches the running pool.
+func effectiveScanWorkers(n int) int {
+	if n <= 0 {
+		return library.DefaultScanWorkers()
+	}
+	return n
+}
+
 // getEnvBoolDefault reads a boolean env var, returning def if unset.
 // Returns an error if the value is set but not a valid boolean.
 func getEnvBoolDefault(key string, def bool) (bool, error) {
@@ -206,7 +227,9 @@ func main() {
 	scanner := library.NewScanner(database, nil, library.ScanConfig{
 		OutputDir: cfg.OutputDir,
 		CacheDir:  cfg.CacheDir,
+		Workers:   cfg.ScanWorkers,
 	})
+	slog.Info("scan worker pool", "workers", effectiveScanWorkers(cfg.ScanWorkers))
 	engine := transcode.NewEngine()
 
 	// Detect the ffmpeg version once at startup (ffmpeg is ALTO's core tool) so

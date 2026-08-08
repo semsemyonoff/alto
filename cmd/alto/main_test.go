@@ -2,6 +2,8 @@ package main
 
 import (
 	"testing"
+
+	"github.com/semsemyonoff/ALTO/internal/library"
 )
 
 func TestParseLibraries(t *testing.T) {
@@ -284,6 +286,65 @@ func TestParseConfig_ScanOnStart(t *testing.T) {
 				t.Errorf("scan on start: got %v, want %v", cfg.ScanOnStart, tt.want)
 			}
 		})
+	}
+}
+
+func TestParseConfig_ScanWorkers(t *testing.T) {
+	tests := []struct {
+		name    string
+		env     string
+		want    int
+		wantErr bool
+	}{
+		{name: "unset means scanner default", env: "", want: 0},
+		{name: "valid value is kept", env: "6", want: 6},
+		{name: "zero means scanner default", env: "0", want: 0},
+		{name: "negative clamps to zero", env: "-3", want: 0},
+		{name: "padded value is trimmed", env: " 2 ", want: 2},
+		{name: "invalid value errors", env: "not-a-number", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("ALTO_LIBRARIES", "Music:/music")
+			t.Setenv("ALTO_SCAN_WORKERS", tt.env)
+
+			cfg, err := ParseConfig()
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error for invalid ALTO_SCAN_WORKERS")
+				}
+				if !contains(err.Error(), "ALTO_SCAN_WORKERS") {
+					t.Errorf("error %q does not mention env var name", err.Error())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if cfg.ScanWorkers != tt.want {
+				t.Errorf("scan workers: got %d, want %d", cfg.ScanWorkers, tt.want)
+			}
+		})
+	}
+}
+
+func TestEffectiveScanWorkers(t *testing.T) {
+	def := library.DefaultScanWorkers()
+	tests := []struct {
+		in   int
+		want int
+	}{
+		{in: 0, want: def},
+		{in: -1, want: def},
+		{in: 1, want: 1},
+		{in: 8, want: 8},
+	}
+
+	for _, tt := range tests {
+		if got := effectiveScanWorkers(tt.in); got != tt.want {
+			t.Errorf("effectiveScanWorkers(%d): got %d, want %d", tt.in, got, tt.want)
+		}
 	}
 }
 
