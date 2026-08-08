@@ -228,8 +228,10 @@ func (s *Scanner) scan(ctx context.Context, lib db.Library, progress func(discov
 		info := dirInfos[rel]
 		audioFiles := dirToFiles[rel]
 
-		coverPath, hasCover := s.resolveCover(ctx, info.absPath, audioFiles, lib.ID, rel)
+		// Probe before resolving the cover: resolveCover reads the embedded-art
+		// flag off an already-probed track instead of probing the first file again.
 		tracks := s.probeFiles(ctx, info.absPath, audioFiles)
+		coverPath, hasCover := s.resolveCover(ctx, info.absPath, tracks, lib.ID, rel)
 		codecSummary := buildCodecSummary(tracks)
 
 		dirID, upsertErr := s.db.UpsertDirectoryWithAudioFlag(lib.ID, rel, codecSummary, hasCover, coverPath, true)
@@ -302,8 +304,9 @@ func containsAltoSegment(path, libRoot string) bool {
 }
 
 // resolveCover returns the cover art path and whether cover art was found.
-// It checks external files first; if none, it tries embedded art extraction.
-func (s *Scanner) resolveCover(ctx context.Context, dirPath string, audioFiles []string, libID int64, relPath string) (string, bool) {
+// It checks external files first; if none, it tries embedded art extraction,
+// using the already-probed tracks rather than probing again.
+func (s *Scanner) resolveCover(ctx context.Context, dirPath string, tracks []db.Track, libID int64, relPath string) (string, bool) {
 	// Check for external cover art files. Use Lstat to reject symlinks — following
 	// symlinks here would allow a crafted cover.jpg -> /etc/passwd to be indexed
 	// and later served through /api/cover.
@@ -314,15 +317,14 @@ func (s *Scanner) resolveCover(ctx context.Context, dirPath string, audioFiles [
 		}
 	}
 
-	// Fall back to embedded art extraction.
-	if len(audioFiles) == 0 {
+	// Fall back to embedded art extraction. Guard on tracks, not on the walk's
+	// audio file list: probeFiles drops files it cannot stat, so a directory with
+	// audio files can still yield no tracks and the two do not correspond
+	// index-for-index.
+	if len(tracks) == 0 || !tracks[0].HasEmbeddedCover {
 		return "", false
 	}
-	src := filepath.Join(dirPath, audioFiles[0])
-	info, err := s.prober.Probe(ctx, src)
-	if err != nil || !info.HasCover {
-		return "", false
-	}
+	src := filepath.Join(dirPath, tracks[0].Filename)
 
 	// Extract embedded cover art to cache.
 	cacheDir := s.cfg.CacheDir
@@ -382,6 +384,7 @@ func (s *Scanner) probeFiles(ctx context.Context, dirPath string, audioFiles []s
 			t.Duration = info.Duration
 			t.SampleRate = info.SampleRate
 			t.Channels = info.Channels
+			t.HasEmbeddedCover = info.HasCover
 		}
 		tracks = append(tracks, t)
 	}

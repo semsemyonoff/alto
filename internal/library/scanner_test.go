@@ -2,6 +2,8 @@ package library
 
 import (
 	"context"
+	"crypto/sha256"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -10,7 +12,8 @@ import (
 	"github.com/semsemyonoff/ALTO/internal/db"
 )
 
-// mockProber is a test double for Prober that returns canned metadata.
+// mockProber is a test double for Prober that returns canned metadata and
+// counts the calls it received per path.
 type mockProber struct {
 	results map[string]*TrackInfo
 	err     map[string]error
@@ -19,9 +22,37 @@ type mockProber struct {
 	// hook, if set, runs before each probe. It lets a test mutate the tree
 	// between the walk and a later directory's probe.
 	hook func(path string)
+
+	mu    sync.Mutex
+	calls map[string]int
+}
+
+// count returns how many times path was probed.
+func (m *mockProber) count(path string) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.calls[path]
+}
+
+// total returns the number of probes across all paths.
+func (m *mockProber) total() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var n int
+	for _, c := range m.calls {
+		n += c
+	}
+	return n
 }
 
 func (m *mockProber) Probe(_ context.Context, path string) (*TrackInfo, error) {
+	m.mu.Lock()
+	if m.calls == nil {
+		m.calls = make(map[string]int)
+	}
+	m.calls[path]++
+	m.mu.Unlock()
+
 	if m.hook != nil {
 		m.hook(path)
 	}
@@ -828,6 +859,286 @@ func TestScannerBatchWriteNoProbeableFiles(t *testing.T) {
 	if len(keptTracks) != 1 || keptTracks[0].Filename != "keeper.flac" {
 		t.Fatalf("expected keeper.flac in A-Album, got %+v", keptTracks)
 	}
+}
+
+// TestScannerProbesEachFileOnce verifies that a directory without external cover
+// art probes every audio file exactly once. Before cover resolution was fed by
+// probeFiles, the first file was probed a second time by resolveCover.
+func TestScannerProbesEachFileOnce(t *testing.T) {
+	root := makeTestTree(t, map[string][]string{
+		"Album": {"01.flac", "02.flac", "03.flac"},
+	})
+
+	database := openTestDB(t)
+	libID, err := database.UpsertLibrary("test", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	prober := &mockProber{
+		defaultResult: &TrackInfo{Codec: "flac", SampleRate: 44100, Channels: 2, HasCover: false},
+	}
+
+	s := NewScanner(database, prober, ScanConfig{CacheDir: t.TempDir()})
+	lib := db.Library{ID: libID, Name: "test", Path: root}
+	if err := s.Scan(context.Background(), lib); err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+
+	dirPath := filepath.Join(root, "Album")
+	for _, name := range []string{"01.flac", "02.flac", "03.flac"} {
+		if got := prober.count(filepath.Join(dirPath, name)); got != 1 {
+			t.Errorf("%s: probed %d times, want 1", name, got)
+		}
+	}
+	if got := prober.total(); got != 3 {
+		t.Errorf("total probes: got %d want 3", got)
+	}
+}
+
+// TestScannerEmbeddedCoverUsesCachedFile verifies the resolution order past the
+// external-file check: the embedded-art flag comes from the probed track, and an
+// already-extracted cache file short-circuits the ffmpeg extraction.
+func TestScannerEmbeddedCoverUsesCachedFile(t *testing.T) {
+	root := makeTestTree(t, map[string][]string{
+		"Album": {"01.flac", "02.flac"},
+	})
+
+	database := openTestDB(t)
+	libID, err := database.UpsertLibrary("test", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cacheDir := t.TempDir()
+	cacheFile := coverCachePath(cacheDir, libID, "Album")
+	if err := os.MkdirAll(filepath.Dir(cacheFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cacheFile, []byte("jpeg"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	prober := &mockProber{
+		defaultResult: &TrackInfo{Codec: "flac", SampleRate: 44100, Channels: 2, HasCover: true},
+	}
+
+	s := NewScanner(database, prober, ScanConfig{CacheDir: cacheDir})
+	lib := db.Library{ID: libID, Name: "test", Path: root}
+	if err := s.Scan(context.Background(), lib); err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+
+	dir, err := database.GetDirectoryByPath(libID, "Album")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dir == nil {
+		t.Fatal("expected Album to be indexed")
+	}
+	if !dir.HasCover {
+		t.Error("expected HasCover=true from the embedded-art flag")
+	}
+	if dir.CoverPath != cacheFile {
+		t.Errorf("CoverPath: got %q want %q", dir.CoverPath, cacheFile)
+	}
+	if got := prober.total(); got != 2 {
+		t.Errorf("total probes: got %d want 2 (one per file)", got)
+	}
+
+	// The flag is persisted per track, not just consumed for cover resolution.
+	tracks, err := database.GetDirectoryFiles(dir.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tr := range tracks {
+		if !tr.HasEmbeddedCover {
+			t.Errorf("%s: HasEmbeddedCover=false, want true", tr.Filename)
+		}
+	}
+}
+
+// TestScannerExternalCoverBeatsEmbedded verifies external art still wins over
+// embedded art, and that a symlinked cover file is still rejected.
+func TestScannerExternalCoverBeatsEmbedded(t *testing.T) {
+	t.Run("regular file wins", func(t *testing.T) {
+		root := makeTestTree(t, map[string][]string{
+			"Album": {"01.flac", "cover.jpg"},
+		})
+
+		database := openTestDB(t)
+		libID, err := database.UpsertLibrary("test", root)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		prober := &mockProber{
+			defaultResult: &TrackInfo{Codec: "flac", SampleRate: 44100, Channels: 2, HasCover: true},
+		}
+
+		s := NewScanner(database, prober, ScanConfig{CacheDir: t.TempDir()})
+		lib := db.Library{ID: libID, Name: "test", Path: root}
+		if err := s.Scan(context.Background(), lib); err != nil {
+			t.Fatalf("Scan: %v", err)
+		}
+
+		dir, err := database.GetDirectoryByPath(libID, "Album")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if dir == nil {
+			t.Fatal("expected Album to be indexed")
+		}
+		if !dir.HasCover {
+			t.Error("expected HasCover=true")
+		}
+		want := filepath.Join(root, "Album", "cover.jpg")
+		if dir.CoverPath != want {
+			t.Errorf("CoverPath: got %q want %q", dir.CoverPath, want)
+		}
+	})
+
+	t.Run("symlink rejected", func(t *testing.T) {
+		root := makeTestTree(t, map[string][]string{
+			"Album": {"01.flac"},
+		})
+		target := filepath.Join(root, "outside.jpg")
+		if err := os.WriteFile(target, []byte("jpeg"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, filepath.Join(root, "Album", "cover.jpg")); err != nil {
+			t.Skipf("symlinks unsupported: %v", err)
+		}
+
+		database := openTestDB(t)
+		libID, err := database.UpsertLibrary("test", root)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// No embedded art either, so the symlink must leave the directory coverless.
+		prober := &mockProber{
+			defaultResult: &TrackInfo{Codec: "flac", SampleRate: 44100, Channels: 2, HasCover: false},
+		}
+
+		s := NewScanner(database, prober, ScanConfig{CacheDir: t.TempDir()})
+		lib := db.Library{ID: libID, Name: "test", Path: root}
+		if err := s.Scan(context.Background(), lib); err != nil {
+			t.Fatalf("Scan: %v", err)
+		}
+
+		dir, err := database.GetDirectoryByPath(libID, "Album")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if dir == nil {
+			t.Fatal("expected Album to be indexed")
+		}
+		if dir.HasCover || dir.CoverPath != "" {
+			t.Errorf("symlinked cover.jpg accepted: HasCover=%v CoverPath=%q", dir.HasCover, dir.CoverPath)
+		}
+	})
+}
+
+// TestScannerCoverSourceIsFirstProbedTrack verifies the embedded-art flag is read
+// from the first *probed track*, not the first walked filename: the two slices do
+// not correspond index-for-index once a file vanishes before its stat.
+func TestScannerCoverSourceIsFirstProbedTrack(t *testing.T) {
+	root := makeTestTree(t, map[string][]string{
+		"A-Album": {"keeper.flac"},
+		"B-Album": {"01.flac", "02.flac"},
+	})
+
+	database := openTestDB(t)
+	libID, err := database.UpsertLibrary("test", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Directories are processed in sorted order: probing A-Album drops B-Album's
+	// first file, so B-Album's only track is 02.flac, which has no embedded art.
+	victim := filepath.Join(root, "B-Album", "01.flac")
+	prober := &mockProber{
+		hook: func(string) { _ = os.Remove(victim) },
+		results: map[string]*TrackInfo{
+			victim: {Codec: "flac", SampleRate: 44100, Channels: 2, HasCover: true},
+			filepath.Join(root, "B-Album", "02.flac"): {Codec: "flac", SampleRate: 44100, Channels: 2, HasCover: false},
+		},
+	}
+
+	s := NewScanner(database, prober, ScanConfig{CacheDir: t.TempDir()})
+	lib := db.Library{ID: libID, Name: "test", Path: root}
+	if err := s.Scan(context.Background(), lib); err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+
+	if got := prober.count(victim); got != 0 {
+		t.Errorf("vanished file probed %d times, want 0", got)
+	}
+
+	dir, err := database.GetDirectoryByPath(libID, "B-Album")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dir == nil {
+		t.Fatal("expected B-Album to be indexed")
+	}
+	if dir.HasCover {
+		t.Error("expected HasCover=false: the surviving track has no embedded art")
+	}
+
+	tracks, err := database.GetDirectoryFiles(dir.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tracks) != 1 || tracks[0].Filename != "02.flac" {
+		t.Fatalf("expected only 02.flac, got %+v", tracks)
+	}
+}
+
+// TestScannerNoCoverWhenAllAudioFilesVanish verifies a directory whose only audio
+// file disappears between the walk and the probe resolves to no cover instead of
+// indexing past the end of an empty track slice.
+func TestScannerNoCoverWhenAllAudioFilesVanish(t *testing.T) {
+	root := makeTestTree(t, map[string][]string{
+		"A-Album": {"keeper.flac"},
+		"B-Album": {"gone.flac"},
+	})
+
+	database := openTestDB(t)
+	libID, err := database.UpsertLibrary("test", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	victim := filepath.Join(root, "B-Album", "gone.flac")
+	prober := &mockProber{
+		hook:          func(string) { _ = os.Remove(victim) },
+		defaultResult: &TrackInfo{Codec: "flac", SampleRate: 44100, Channels: 2, HasCover: true},
+	}
+
+	s := NewScanner(database, prober, ScanConfig{CacheDir: t.TempDir()})
+	lib := db.Library{ID: libID, Name: "test", Path: root}
+	if err := s.Scan(context.Background(), lib); err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+
+	dir, err := database.GetDirectoryByPath(libID, "B-Album")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dir == nil {
+		t.Fatal("expected B-Album to still be indexed")
+	}
+	if dir.HasCover || dir.CoverPath != "" {
+		t.Errorf("expected no cover, got HasCover=%v CoverPath=%q", dir.HasCover, dir.CoverPath)
+	}
+}
+
+// coverCachePath mirrors the extracted-cover cache location used by resolveCover.
+func coverCachePath(cacheDir string, libID int64, relPath string) string {
+	hash := sha256.Sum256(fmt.Appendf(nil, "%d/%s", libID, relPath))
+	return filepath.Join(cacheDir, "covers", fmt.Sprintf("%d", libID), fmt.Sprintf("%x.jpg", hash))
 }
 
 func childPaths(dirs []db.Directory) []string {
