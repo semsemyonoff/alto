@@ -3,6 +3,7 @@ package library
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"errors"
 	"fmt"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/semsemyonoff/ALTO/internal/db"
+	_ "modernc.org/sqlite"
 )
 
 // mockProber is a test double for Prober that returns canned metadata and
@@ -1413,6 +1415,170 @@ func TestScannerFailedProbeRetriedNextScan(t *testing.T) {
 	}
 	if stored["broken.flac"].Codec != "flac" {
 		t.Errorf("broken.flac codec after retry: got %q want %q", stored["broken.flac"].Codec, "flac")
+	}
+}
+
+// TestScannerSkipsTrackWritesForUnchangedDirectory verifies a warm rescan of an
+// untouched directory issues no track writes at all — the point of the cache is
+// lost if every rescan still upserts every row.
+func TestScannerSkipsTrackWritesForUnchangedDirectory(t *testing.T) {
+	root := makeTestTree(t, map[string][]string{
+		"Album":       {"01.flac", "02.flac"},
+		"Album/Extra": {"03.flac"},
+	})
+
+	database, trackWrites := openCountingTestDB(t)
+	libID, err := database.UpsertLibrary("test", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	prober := &mockProber{}
+	s := NewScanner(database, prober, ScanConfig{CacheDir: t.TempDir()})
+	lib := db.Library{ID: libID, Name: "test", Path: root}
+	if err := s.Scan(context.Background(), lib); err != nil {
+		t.Fatalf("first Scan: %v", err)
+	}
+
+	first := trackWrites()
+	if first != 3 {
+		t.Fatalf("first scan track writes: got %d want 3", first)
+	}
+	before := tracksByName(t, database, libID, "Album")
+
+	if err := s.Scan(context.Background(), lib); err != nil {
+		t.Fatalf("second Scan: %v", err)
+	}
+
+	if got := trackWrites(); got != first {
+		t.Errorf("second scan issued %d track writes, want 0", got-first)
+	}
+	if got := prober.total(); got != 3 {
+		t.Errorf("second scan issued %d probes, want 0", got-3)
+	}
+
+	// Skipping the write must not skip the rows: they are still the stored ones.
+	after := tracksByName(t, database, libID, "Album")
+	for name, want := range before {
+		if got := after[name]; got != want {
+			t.Errorf("%s: row changed across rescan\n got %+v\nwant %+v", name, got, want)
+		}
+	}
+	if len(after) != len(before) {
+		t.Errorf("track count changed: %d -> %d", len(before), len(after))
+	}
+}
+
+// TestScannerWritesDirectoryWithChangedFileSet verifies the write skip is keyed
+// on the filename set too: a directory that gains or loses a file is written
+// even though its surviving files are all cache hits.
+func TestScannerWritesDirectoryWithChangedFileSet(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(t *testing.T, albumDir string)
+		want   []string
+	}{
+		{
+			name: "gains a file",
+			mutate: func(t *testing.T, albumDir string) {
+				if err := os.WriteFile(filepath.Join(albumDir, "03.flac"), []byte("fake"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: []string{"01.flac", "02.flac", "03.flac"},
+		},
+		{
+			name: "loses a file",
+			mutate: func(t *testing.T, albumDir string) {
+				if err := os.Remove(filepath.Join(albumDir, "02.flac")); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: []string{"01.flac"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			root := makeTestTree(t, map[string][]string{
+				"Album": {"01.flac", "02.flac"},
+			})
+
+			database, trackWrites := openCountingTestDB(t)
+			libID, err := database.UpsertLibrary("test", root)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			s := NewScanner(database, &mockProber{}, ScanConfig{CacheDir: t.TempDir()})
+			lib := db.Library{ID: libID, Name: "test", Path: root}
+			if err := s.Scan(context.Background(), lib); err != nil {
+				t.Fatalf("first Scan: %v", err)
+			}
+
+			first := trackWrites()
+			tc.mutate(t, filepath.Join(root, "Album"))
+
+			if err := s.Scan(context.Background(), lib); err != nil {
+				t.Fatalf("second Scan: %v", err)
+			}
+
+			if got := trackWrites() - first; got != len(tc.want) {
+				t.Errorf("second scan track writes: got %d want %d", got, len(tc.want))
+			}
+
+			stored := tracksByName(t, database, libID, "Album")
+			if len(stored) != len(tc.want) {
+				t.Fatalf("stored tracks: got %d (%v) want %d", len(stored), stored, len(tc.want))
+			}
+			for _, name := range tc.want {
+				if _, ok := stored[name]; !ok {
+					t.Errorf("%s: missing from the DB after rescan", name)
+				}
+			}
+		})
+	}
+}
+
+// openCountingTestDB opens a file-backed test DB and returns it alongside a
+// counter of insert/update statements against the tracks table. The counter is a
+// trigger installed through a second connection to the same file: the DB API
+// exposes no write accounting, and an upsert keeps the row's rowid, so rowids
+// cannot tell a skipped write from a no-op one.
+func openCountingTestDB(t *testing.T) (*db.DB, func() int) {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "alto.db")
+	database, err := db.Open(path)
+	if err != nil {
+		t.Fatalf("open file db: %v", err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+
+	raw, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatalf("open counting connection: %v", err)
+	}
+	t.Cleanup(func() { _ = raw.Close() })
+
+	for _, stmt := range []string{
+		`CREATE TABLE track_writes(n INTEGER NOT NULL)`,
+		`INSERT INTO track_writes(n) VALUES(0)`,
+		`CREATE TRIGGER track_writes_insert AFTER INSERT ON tracks BEGIN UPDATE track_writes SET n = n + 1; END`,
+		`CREATE TRIGGER track_writes_update AFTER UPDATE ON tracks BEGIN UPDATE track_writes SET n = n + 1; END`,
+	} {
+		if _, err := raw.Exec(stmt); err != nil {
+			t.Fatalf("install track write counter (%s): %v", stmt, err)
+		}
+	}
+
+	return database, func() int {
+		t.Helper()
+		var n int
+		if err := raw.QueryRow(`SELECT n FROM track_writes`).Scan(&n); err != nil {
+			t.Fatalf("read track write counter: %v", err)
+		}
+		return n
 	}
 }
 

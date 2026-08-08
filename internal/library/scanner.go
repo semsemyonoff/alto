@@ -238,7 +238,7 @@ func (s *Scanner) scan(ctx context.Context, lib db.Library, progress func(discov
 
 		// Probe before resolving the cover: resolveCover reads the embedded-art
 		// flag off an already-probed track instead of probing the first file again.
-		tracks := s.probeFiles(ctx, info.absPath, audioFiles, cached)
+		tracks, allCached := s.probeFiles(ctx, info.absPath, audioFiles, cached)
 		coverPath, hasCover := s.resolveCover(ctx, info.absPath, tracks, lib.ID, rel)
 		codecSummary := buildCodecSummary(tracks)
 
@@ -248,10 +248,16 @@ func (s *Scanner) scan(ctx context.Context, lib db.Library, progress func(discov
 			continue
 		}
 
-		// One transaction per directory: a failure rolls back this directory's
-		// tracks, so warn once and move on rather than aborting the scan.
-		if writeErr := s.db.UpsertTracks(dirID, tracks); writeErr != nil {
-			slog.Warn("upsert tracks", "dir", rel, "tracks", len(tracks), "err", writeErr)
+		// When every file was a cache hit and the on-disk name set is the stored
+		// one, the rows to write are identical to the rows already there. Skipping
+		// that transaction is what makes a warm rescan cheap; the directory row and
+		// the stale-file cleanup still run unconditionally, being one statement each.
+		if !allCached || !tracksMatchCache(tracks, cached) {
+			// One transaction per directory: a failure rolls back this directory's
+			// tracks, so warn once and move on rather than aborting the scan.
+			if writeErr := s.db.UpsertTracks(dirID, tracks); writeErr != nil {
+				slog.Warn("upsert tracks", "dir", rel, "tracks", len(tracks), "err", writeErr)
+			}
 		}
 
 		if deleteErr := s.db.DeleteStaleFiles(dirID, audioFiles); deleteErr != nil {
@@ -368,9 +374,12 @@ func (s *Scanner) resolveCover(ctx context.Context, dirPath string, tracks []db.
 }
 
 // probeFiles returns a Track record per audio file, running ffprobe only on the
-// files whose size and mtime differ from the cached row of the same name.
-func (s *Scanner) probeFiles(ctx context.Context, dirPath string, audioFiles []string, cached map[string]db.Track) []db.Track {
+// files whose size and mtime differ from the cached row of the same name. The
+// second return value reports whether every returned track came from the cache,
+// i.e. whether no file was probed.
+func (s *Scanner) probeFiles(ctx context.Context, dirPath string, audioFiles []string, cached map[string]db.Track) ([]db.Track, bool) {
 	tracks := make([]db.Track, 0, len(audioFiles))
+	allCached := true
 	for _, name := range audioFiles {
 		fullPath := filepath.Join(dirPath, name)
 		before, err := os.Stat(fullPath)
@@ -387,6 +396,7 @@ func (s *Scanner) probeFiles(ctx context.Context, dirPath string, audioFiles []s
 			continue
 		}
 
+		allCached = false
 		t := db.Track{
 			Filename: name,
 			Size:     before.Size(),
@@ -417,7 +427,22 @@ func (s *Scanner) probeFiles(ctx context.Context, dirPath string, audioFiles []s
 		}
 		tracks = append(tracks, t)
 	}
-	return tracks
+	return tracks, allCached
+}
+
+// tracksMatchCache reports whether tracks is exactly the set of stored rows in
+// cached, by filename. Paired with an all-cache-hit probe pass it means writing
+// tracks back would store the same values that are already there.
+func tracksMatchCache(tracks []db.Track, cached map[string]db.Track) bool {
+	if len(tracks) != len(cached) {
+		return false
+	}
+	for _, t := range tracks {
+		if _, ok := cached[t.Filename]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // buildCodecSummary returns a human-readable codec summary for a directory.
