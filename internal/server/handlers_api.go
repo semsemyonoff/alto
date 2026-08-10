@@ -115,6 +115,33 @@ const (
 	codeInternalError            = "internal_error"
 )
 
+// allAPIErrorCodes lists every code above. Go cannot enumerate a const block at
+// runtime, and the OpenAPI document's Error.code enum is checked against this
+// slice — so a code missing here is a code missing from the contract.
+// TestErrorCodeHygiene fails if the two drift apart.
+var allAPIErrorCodes = []string{
+	codeInvalidRequest,
+	codePathForbidden,
+	codePathNotFound,
+	codeLibraryNotFound,
+	codeNotIndexed,
+	codeNoTracks,
+	codeMixedDirectory,
+	codeNoLosslessTracks,
+	codeUnknownFile,
+	codeLossySourceSelected,
+	codeOutputDirNotConfigured,
+	codeOutputNameConflict,
+	codeCopySkippedNotApplicable,
+	codeEngineUnavailable,
+	codeJobAlreadyRunning,
+	codeJobAlreadyFinished,
+	codeJobNotFound,
+	codeScanRunning,
+	codeNoCover,
+	codeInternalError,
+}
+
 // apiErrorDTO is the error envelope every JSON endpoint answers with.
 // Extra carries optional per-code context (offending file names, a job id, …)
 // and is flattened into the same object by MarshalJSON.
