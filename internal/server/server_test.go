@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -222,9 +223,7 @@ func TestHandleTree_InvalidID(t *testing.T) {
 	w := httptest.NewRecorder()
 	srv.ServeHTTP(w, req)
 
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("want 400, got %d", w.Code)
-	}
+	assertAPIError(t, w, http.StatusBadRequest, codeInvalidRequest)
 }
 
 // --- GET /api/tree/{libraryID}/children ---
@@ -463,9 +462,7 @@ func TestHandleDir_MissingPath(t *testing.T) {
 	w := httptest.NewRecorder()
 	srv.ServeHTTP(w, req)
 
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("want 400, got %d", w.Code)
-	}
+	assertAPIError(t, w, http.StatusBadRequest, codeInvalidRequest)
 }
 
 func TestHandleDir_OutsideRoot(t *testing.T) {
@@ -475,9 +472,21 @@ func TestHandleDir_OutsideRoot(t *testing.T) {
 	w := httptest.NewRecorder()
 	srv.ServeHTTP(w, req)
 
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("want 403, got %d", w.Code)
-	}
+	assertAPIError(t, w, http.StatusForbidden, codePathForbidden)
+}
+
+// TestHandleDir_MissingOnDisk pins the path_not_found / not_indexed split: a path
+// absent from the filesystem is a typo, and rescanning will not help.
+func TestHandleDir_MissingOnDisk(t *testing.T) {
+	srv, _, libDir := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, apiURL("/api/dir", map[string]string{
+		"path": filepath.Join(libDir, "Nope"),
+	}), nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	assertAPIError(t, w, http.StatusNotFound, codePathNotFound)
 }
 
 func TestHandleDir_AltoSegmentRejected(t *testing.T) {
@@ -490,9 +499,7 @@ func TestHandleDir_AltoSegmentRejected(t *testing.T) {
 	w := httptest.NewRecorder()
 	srv.ServeHTTP(w, req)
 
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("want 403, got %d", w.Code)
-	}
+	assertAPIError(t, w, http.StatusForbidden, codePathForbidden)
 }
 
 func TestHandleDir_AltoTmpRejected(t *testing.T) {
@@ -505,9 +512,7 @@ func TestHandleDir_AltoTmpRejected(t *testing.T) {
 	w := httptest.NewRecorder()
 	srv.ServeHTTP(w, req)
 
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("want 403, got %d", w.Code)
-	}
+	assertAPIError(t, w, http.StatusForbidden, codePathForbidden)
 }
 
 func TestHandleDir_LegitimateOutDir(t *testing.T) {
@@ -539,9 +544,7 @@ func TestHandleDir_NotInDB(t *testing.T) {
 	w := httptest.NewRecorder()
 	srv.ServeHTTP(w, req)
 
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("want 404, got %d", w.Code)
-	}
+	assertAPIError(t, w, http.StatusNotFound, codeNotIndexed)
 }
 
 func TestHandleDir_NonAudioDirectoryRejected(t *testing.T) {
@@ -558,9 +561,7 @@ func TestHandleDir_NonAudioDirectoryRejected(t *testing.T) {
 	w := httptest.NewRecorder()
 	srv.ServeHTTP(w, req)
 
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("want 404, got %d: %s", w.Code, w.Body.String())
-	}
+	assertAPIError(t, w, http.StatusNotFound, codeNotIndexed)
 }
 
 // --- POST /api/scan ---
@@ -615,9 +616,7 @@ func TestHandleScan_Duplicate_Returns409(t *testing.T) {
 	req2 := httptest.NewRequest(http.MethodPost, "/api/scan", nil)
 	w2 := httptest.NewRecorder()
 	srv.ServeHTTP(w2, req2)
-	if w2.Code != http.StatusConflict {
-		t.Fatalf("second scan: want 409, got %d", w2.Code)
-	}
+	assertAPIError(t, w2, http.StatusConflict, codeScanRunning)
 
 	var resp map[string]string
 	json.NewDecoder(w2.Body).Decode(&resp) //nolint:errcheck
@@ -637,9 +636,7 @@ func TestHandleScan_LibraryIDNotFound(t *testing.T) {
 	w := httptest.NewRecorder()
 	srv.ServeHTTP(w, req)
 
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("want 404, got %d", w.Code)
-	}
+	assertAPIError(t, w, http.StatusNotFound, codeLibraryNotFound)
 }
 
 func TestHandleScan_InvalidLibraryID(t *testing.T) {
@@ -649,9 +646,7 @@ func TestHandleScan_InvalidLibraryID(t *testing.T) {
 	w := httptest.NewRecorder()
 	srv.ServeHTTP(w, req)
 
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("want 400, got %d", w.Code)
-	}
+	assertAPIError(t, w, http.StatusBadRequest, codeInvalidRequest)
 }
 
 func TestHandleScan_SpecificLibrary(t *testing.T) {
@@ -915,9 +910,7 @@ func TestHandleCover_MissingPath(t *testing.T) {
 	w := httptest.NewRecorder()
 	srv.ServeHTTP(w, req)
 
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("want 400, got %d", w.Code)
-	}
+	assertAPIError(t, w, http.StatusBadRequest, codeInvalidRequest)
 }
 
 func TestHandleCover_OutsideRoot(t *testing.T) {
@@ -927,9 +920,7 @@ func TestHandleCover_OutsideRoot(t *testing.T) {
 	w := httptest.NewRecorder()
 	srv.ServeHTTP(w, req)
 
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("want 403, got %d", w.Code)
-	}
+	assertAPIError(t, w, http.StatusForbidden, codePathForbidden)
 }
 
 func TestHandleCover_AltoSegmentRejected(t *testing.T) {
@@ -942,9 +933,7 @@ func TestHandleCover_AltoSegmentRejected(t *testing.T) {
 	w := httptest.NewRecorder()
 	srv.ServeHTTP(w, req)
 
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("want 403, got %d", w.Code)
-	}
+	assertAPIError(t, w, http.StatusForbidden, codePathForbidden)
 }
 
 func TestHandleCover_NoCover(t *testing.T) {
@@ -959,9 +948,25 @@ func TestHandleCover_NoCover(t *testing.T) {
 	w := httptest.NewRecorder()
 	srv.ServeHTTP(w, req)
 
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("want 404, got %d", w.Code)
-	}
+	assertAPIError(t, w, http.StatusNotFound, codeNoCover)
+}
+
+// TestHandleCover_IndexedButMissingFile covers the split between "the directory
+// has no cover" (no_cover) and "the indexed cover file is gone" (path_not_found).
+func TestHandleCover_IndexedButMissingFile(t *testing.T) {
+	srv, database, libDir := newTestServer(t)
+	libID := srv.cfg.Libraries[0].ID
+
+	absPath := filepath.Join(libDir, "Gone")
+	mkdirAll(t, absPath)
+	coverPath := filepath.Join(absPath, "cover.jpg")
+	database.UpsertDirectory(libID, "Gone", "FLAC", true, coverPath) //nolint:errcheck
+
+	req := httptest.NewRequest(http.MethodGet, apiURL("/api/cover", map[string]string{"path": absPath}), nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	assertAPIError(t, w, http.StatusNotFound, codePathNotFound)
 }
 
 func TestHandleCover_WithJPEG(t *testing.T) {
@@ -1032,6 +1037,86 @@ func TestHandleFavicon_UsesLogo(t *testing.T) {
 }
 
 // --- Destination path validation (unit tests for DestinationValidate) ---
+
+// --- JSON error envelope across the API surface ---
+
+// TestJSONAPIRoutes_ErrorEnvelope walks every JSON route that has a reachable
+// rejection path and asserts the response is application/json carrying a
+// non-empty `code`, so clients can branch on the code instead of matching
+// message strings.
+func TestJSONAPIRoutes_ErrorEnvelope(t *testing.T) {
+	cases := []struct {
+		name       string
+		method     string
+		target     func(libDir string) string
+		body       io.Reader
+		wantStatus int
+	}{
+		{"tree invalid id", http.MethodGet, func(string) string { return "/api/tree/notanid" }, nil, http.StatusBadRequest},
+		{"dir missing path", http.MethodGet, func(string) string { return "/api/dir" }, nil, http.StatusBadRequest},
+		{"dir outside root", http.MethodGet, func(string) string {
+			return apiURL("/api/dir", map[string]string{"path": "/etc"})
+		}, nil, http.StatusForbidden},
+		{"dir missing on disk", http.MethodGet, func(libDir string) string {
+			return apiURL("/api/dir", map[string]string{"path": filepath.Join(libDir, "nope")})
+		}, nil, http.StatusNotFound},
+		{"scan invalid library id", http.MethodPost, func(string) string { return "/api/scan?library_id=abc" }, nil, http.StatusBadRequest},
+		{"scan unknown library", http.MethodPost, func(string) string { return "/api/scan?library_id=9999" }, nil, http.StatusNotFound},
+		{"cover missing path", http.MethodGet, func(string) string { return "/api/cover" }, nil, http.StatusBadRequest},
+		{"cover outside root", http.MethodGet, func(string) string {
+			return apiURL("/api/cover", map[string]string{"path": "/etc"})
+		}, nil, http.StatusForbidden},
+		{"job cancel unknown", http.MethodPost, func(string) string { return "/api/jobs/nope/cancel" }, nil, http.StatusNotFound},
+		{"job remove unknown", http.MethodPost, func(string) string { return "/api/jobs/nope/remove" }, nil, http.StatusNotFound},
+		{"transcode log unknown", http.MethodGet, func(string) string { return "/api/transcode/nope/log" }, nil, http.StatusNotFound},
+		// newTestServer wires no engine, so this is the first gate the handler hits;
+		// its other rejection codes are covered exhaustively in transcode_test.go.
+		{"transcode engine unavailable", http.MethodPost, func(string) string { return "/api/transcode" },
+			strings.NewReader("{}"), http.StatusServiceUnavailable},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, _, libDir := newTestServer(t)
+
+			req := httptest.NewRequest(tc.method, tc.target(libDir), tc.body)
+			w := httptest.NewRecorder()
+			srv.ServeHTTP(w, req)
+
+			if w.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d: %s", w.Code, tc.wantStatus, w.Body.String())
+			}
+			if ct := w.Header().Get("Content-Type"); ct != "application/json" {
+				t.Fatalf("content type = %q, want application/json", ct)
+			}
+			if code := errorCode(t, w); code == "" {
+				t.Errorf("empty code in %s", w.Body.String())
+			}
+		})
+	}
+}
+
+// TestHTMXPartialRoutes_StayPlainText pins the deliberate exclusion: the tree
+// partials are swapped into the DOM by htmx, so a JSON envelope would be
+// rendered as visible text.
+func TestHTMXPartialRoutes_StayPlainText(t *testing.T) {
+	for _, target := range []string{"/api/tree/notanid/children", "/api/tree/notanid/search"} {
+		t.Run(target, func(t *testing.T) {
+			srv, _, _ := newTestServer(t)
+
+			req := httptest.NewRequest(http.MethodGet, target, nil)
+			w := httptest.NewRecorder()
+			srv.ServeHTTP(w, req)
+
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400", w.Code)
+			}
+			if ct := w.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/plain") {
+				t.Errorf("content type = %q, want text/plain", ct)
+			}
+		})
+	}
+}
 
 func TestDestinationValidate_EndpointUsage(t *testing.T) {
 	// Verify DestinationValidate works correctly for the transcode output

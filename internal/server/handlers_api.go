@@ -76,6 +76,7 @@ const (
 	codeJobAlreadyFinished       = "job_already_finished"
 	codeJobNotFound              = "job_not_found"
 	codeScanRunning              = "scan_running"
+	codeNoCover                  = "no_cover"
 	codeInternalError            = "internal_error"
 )
 
@@ -111,12 +112,12 @@ func writeAPIError(w http.ResponseWriter, status int, code, msg string, extra ma
 func (s *Server) handleLibraries(w http.ResponseWriter, r *http.Request) {
 	libs, err := s.db.GetLibraries()
 	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, codeInternalError, "internal error", nil)
 		return
 	}
 	counts, err := s.db.GetLibraryTrackCounts()
 	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, codeInternalError, "internal error", nil)
 		return
 	}
 	dtos := make([]libraryDTO, len(libs))
@@ -132,13 +133,13 @@ func (s *Server) handleLibraries(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleTree(w http.ResponseWriter, r *http.Request) {
 	libraryID, err := strconv.ParseInt(r.PathValue("libraryID"), 10, 64)
 	if err != nil || libraryID <= 0 {
-		http.Error(w, "invalid library_id", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, codeInvalidRequest, "invalid library_id", nil)
 		return
 	}
 
 	dirs, err := s.db.GetDirectoryTree(libraryID)
 	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, codeInternalError, "internal error", nil)
 		return
 	}
 
@@ -153,6 +154,8 @@ func (s *Server) handleTree(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleTreeChildren returns direct children of a directory as an HTML partial for HTMX.
+// It keeps http.Error on purpose: htmx swaps the response body into the DOM, so a JSON
+// error envelope would be rendered as text.
 // GET /api/tree/{libraryID}/children?parent=RELATIVE_PATH
 func (s *Server) handleTreeChildren(w http.ResponseWriter, r *http.Request) {
 	libraryID, err := strconv.ParseInt(r.PathValue("libraryID"), 10, 64)
@@ -196,6 +199,7 @@ func (s *Server) handleTreeChildren(w http.ResponseWriter, r *http.Request) {
 // handleTreeSearch returns directories in a library whose path contains q
 // (case-insensitive) as a flat HTML partial for HTMX. An empty q re-renders
 // the library's root tree so clearing the search box restores the normal view.
+// Like handleTreeChildren it stays on http.Error — the response is an htmx swap target.
 // GET /api/tree/{libraryID}/search?q=
 func (s *Server) handleTreeSearch(w http.ResponseWriter, r *http.Request) {
 	libraryID, err := strconv.ParseInt(r.PathValue("libraryID"), 10, 64)
@@ -260,39 +264,37 @@ func (s *Server) handleTreeSearch(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDir(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Query().Get("path")
 	if path == "" {
-		http.Error(w, "path required", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, codeInvalidRequest, `"path" is required`, nil)
 		return
 	}
 
 	resolved, err := LibraryOnlyValidate(path, s.libRoots())
 	if err != nil {
-		WritePathError(w, err)
+		WritePathErrorJSON(w, err)
 		return
 	}
 
 	lib, rel, ok := s.findLibraryForPath(resolved)
 	if !ok {
-		http.Error(w, "library not found for path", http.StatusNotFound)
+		writeAPIError(w, http.StatusNotFound, codeLibraryNotFound, "library not found for path", nil)
 		return
 	}
 
 	dir, err := s.db.GetDirectoryByPath(lib.ID, rel)
 	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, codeInternalError, "internal error", nil)
 		return
 	}
-	if dir == nil {
-		http.Error(w, "directory not found", http.StatusNotFound)
-		return
-	}
-	if !dir.IsAudio {
-		http.Error(w, "directory not found", http.StatusNotFound)
+	// The path exists on disk (LibraryOnlyValidate resolved it) but carries no
+	// index row, or one that holds no audio — distinct from path_not_found.
+	if dir == nil || !dir.IsAudio {
+		writeAPIError(w, http.StatusNotFound, codeNotIndexed, "directory not found in index", nil)
 		return
 	}
 
 	tracks, err := s.db.GetDirectoryFiles(dir.ID)
 	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, codeInternalError, "internal error", nil)
 		return
 	}
 
@@ -324,14 +326,14 @@ func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
 	if idStr := r.URL.Query().Get("library_id"); idStr != "" {
 		id, err := strconv.ParseInt(idStr, 10, 64)
 		if err != nil || id <= 0 {
-			http.Error(w, "invalid library_id", http.StatusBadRequest)
+			writeAPIError(w, http.StatusBadRequest, codeInvalidRequest, "invalid library_id", nil)
 			return
 		}
 		targetLibraryID = id
 	}
 
 	if !s.scan.start() {
-		writeJSON(w, http.StatusConflict, map[string]string{"error": "scan already running"})
+		writeAPIError(w, http.StatusConflict, codeScanRunning, "scan already running", nil)
 		return
 	}
 
@@ -345,7 +347,7 @@ func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
 
 	if len(libs) == 0 {
 		s.scan.reset()
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "library not found"})
+		writeAPIError(w, http.StatusNotFound, codeLibraryNotFound, "library not found", nil)
 		return
 	}
 
@@ -360,7 +362,7 @@ func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleScanStatus(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, codeInternalError, "streaming unsupported", nil)
 		return
 	}
 
@@ -401,29 +403,29 @@ func (s *Server) handleScanStatus(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleCover(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Query().Get("path")
 	if path == "" {
-		http.Error(w, "path required", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, codeInvalidRequest, `"path" is required`, nil)
 		return
 	}
 
 	resolved, err := LibraryOnlyValidate(path, s.libRoots())
 	if err != nil {
-		WritePathError(w, err)
+		WritePathErrorJSON(w, err)
 		return
 	}
 
 	lib, rel, ok := s.findLibraryForPath(resolved)
 	if !ok {
-		http.Error(w, "library not found for path", http.StatusNotFound)
+		writeAPIError(w, http.StatusNotFound, codeLibraryNotFound, "library not found for path", nil)
 		return
 	}
 
 	dir, err := s.db.GetDirectoryByPath(lib.ID, rel)
 	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, codeInternalError, "internal error", nil)
 		return
 	}
 	if dir == nil || !dir.HasCover || dir.CoverPath == "" {
-		http.Error(w, "no cover art", http.StatusNotFound)
+		writeAPIError(w, http.StatusNotFound, codeNoCover, "no cover art", nil)
 		return
 	}
 
@@ -432,19 +434,19 @@ func (s *Server) handleCover(w http.ResponseWriter, r *http.Request) {
 	// rather than following the symlink to an arbitrary file.
 	fd, err := syscall.Open(dir.CoverPath, syscall.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
-		http.Error(w, "cover not found", http.StatusNotFound)
+		writeAPIError(w, http.StatusNotFound, codePathNotFound, "cover file not found", nil)
 		return
 	}
 	f := os.NewFile(uintptr(fd), dir.CoverPath)
 	if f == nil {
-		http.Error(w, "cover not found", http.StatusNotFound)
+		writeAPIError(w, http.StatusNotFound, codePathNotFound, "cover file not found", nil)
 		return
 	}
 	defer func() { _ = f.Close() }()
 
 	fi, err := f.Stat()
 	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, codeInternalError, "internal error", nil)
 		return
 	}
 
