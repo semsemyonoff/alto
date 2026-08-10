@@ -161,9 +161,9 @@ func TestTranscodeDock_NotRenderedWithoutTracks(t *testing.T) {
 	}
 }
 
-// TestTranscodeDock_DisabledForLossyTracks verifies that a directory with only
-// lossy tracks still renders the dock, but flagged not-transcodable so START
-// disables itself with a reason.
+// TestTranscodeDock_DisabledForLossyTracks verifies that a directory holding
+// nothing but lossy tracks still renders the dock, but flagged not-transcodable
+// so START disables itself with a reason.
 func TestTranscodeDock_DisabledForLossyTracks(t *testing.T) {
 	srv, database, libDir := newTestServerWithRealTemplates(t)
 	libID := srv.cfg.Libraries[0].ID
@@ -200,7 +200,49 @@ func TestTranscodeDock_DisabledForLossyTracks(t *testing.T) {
 		t.Error("dock must still render for lossy directories, disabled via data-can-transcode")
 	}
 	if !strings.Contains(body, `data-can-transcode="false"`) {
-		t.Error("expect data-can-transcode=false for a lossy directory")
+		t.Error("expect data-can-transcode=false for an all-lossy directory")
+	}
+}
+
+// TestTranscodeDock_EnabledForMixedDirectory verifies the loosened page gate: a
+// directory holding both lossless and lossy tracks is transcodable, because the
+// dock narrows it with skip_lossy / files instead of refusing the whole album.
+func TestTranscodeDock_EnabledForMixedDirectory(t *testing.T) {
+	srv, database, libDir := newTestServerWithRealTemplates(t)
+	libID := srv.cfg.Libraries[0].ID
+
+	absPath := filepath.Join(libDir, "MixedDir")
+	mkdirAll(t, absPath)
+	dirID, err := database.UpsertDirectory(libID, "MixedDir", "FLAC, MP3", false, "")
+	if err != nil {
+		t.Fatalf("UpsertDirectory: %v", err)
+	}
+	for _, tr := range []db.Track{
+		{DirectoryID: dirID, Filename: "01 A.flac", Codec: "flac", Bitrate: 900_000, Duration: 200.0, SampleRate: 44100, Channels: 2, Size: 22_500_000},
+		{DirectoryID: dirID, Filename: "02 B.mp3", Codec: "mp3", Bitrate: 320_000, Duration: 180.0, SampleRate: 44100, Channels: 2, Size: 7_200_000},
+	} {
+		if err := database.UpsertTrack(tr); err != nil {
+			t.Fatalf("UpsertTrack: %v", err)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, apiURL("/dir", map[string]string{"path": absPath}), nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+
+	if !strings.Contains(body, `data-can-transcode="true"`) {
+		t.Error("expect data-can-transcode=true for a mixed directory")
+	}
+	if !strings.Contains(body, `id="tc_skip_lossy"`) {
+		t.Error("expect the skip-lossy toggle (id=tc_skip_lossy) in the dock")
+	}
+	if !strings.Contains(body, `id="tc_copy_skipped"`) {
+		t.Error("expect the copy-skipped checkbox (id=tc_copy_skipped) in the dock")
 	}
 }
 

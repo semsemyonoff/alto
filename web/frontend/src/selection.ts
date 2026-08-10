@@ -33,6 +33,11 @@ export function parseTracks(json: string | null | undefined): TrackInfo[] {
   }
 }
 
+/** Reports whether the directory holds at least one lossy track, i.e. whether skip-lossy applies. */
+export function hasLossyTracks(tracks: TrackInfo[]): boolean {
+  return tracks.some((t) => !t.lossless)
+}
+
 /** The selection a freshly-loaded directory starts with: every lossless track, nothing else. */
 export function defaultSelection(tracks: TrackInfo[]): SelectionMap {
   const selection: SelectionMap = {}
@@ -88,12 +93,15 @@ export interface SelectionStore {
   path: string
   tracks: TrackInfo[]
   selected: SelectionMap
+  skipLossy: boolean
   init(path: string, tracks: TrackInfo[]): void
   isSelectable(name: string): boolean
   isSelected(name: string): boolean
   toggle(name: string): void
   toggleAll(): void
+  setSkipLossy(on: boolean): void
   readonly losslessCount: number
+  readonly hasLossy: boolean
   readonly allSelected: boolean
   readonly names: string[]
 }
@@ -104,6 +112,10 @@ export function selectionStore(): SelectionStore {
     path: '',
     tracks: [],
     selected: {},
+    // The dock's "Skip lossy" toggle. It lives here rather than in the dock
+    // because it and the row checkboxes are the two mutually exclusive selection
+    // inputs (`skip_lossy` vs `files`), and they render in two separate islands.
+    skipLossy: false,
 
     // Rebuilding only when the path differs makes this safe to call after every
     // htmx swap: navigating to another directory resets the selection, while a
@@ -113,6 +125,7 @@ export function selectionStore(): SelectionStore {
       this.path = path
       this.tracks = tracks
       this.selected = defaultSelection(tracks)
+      this.skipLossy = hasLossyTracks(tracks)
     },
 
     isSelectable(name: string): boolean {
@@ -121,15 +134,28 @@ export function selectionStore(): SelectionStore {
     isSelected(name: string): boolean {
       return !!this.selected[name]
     },
+    // Touching a checkbox means an explicit `files` list, so it clears the
+    // toggle — the server rejects a request carrying both.
     toggle(name: string) {
       this.selected = toggleTrack(this.tracks, this.selected, name)
+      this.skipLossy = false
     },
     toggleAll() {
       this.selected = toggleAll(this.tracks, this.selected)
+      this.skipLossy = false
+    },
+    // Turning skip-lossy back on restores the selection it describes, so the
+    // checkbox column always shows what the next START will actually transcode.
+    setSkipLossy(on: boolean) {
+      this.skipLossy = on
+      if (on) this.selected = defaultSelection(this.tracks)
     },
 
     get losslessCount(): number {
       return this.tracks.filter((t) => t.lossless).length
+    },
+    get hasLossy(): boolean {
+      return hasLossyTracks(this.tracks)
     },
     get allSelected(): boolean {
       return allSelected(this.tracks, this.selected)

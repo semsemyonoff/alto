@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   allSelected,
   defaultSelection,
+  hasLossyTracks,
   isSelectable,
   parseTracks,
   readSelectionConfig,
@@ -154,6 +155,15 @@ describe('readSelectionConfig', () => {
   })
 })
 
+describe('hasLossyTracks', () => {
+  it('is true only when some track is lossy', () => {
+    expect(hasLossyTracks(MIXED)).toBe(true)
+    expect(hasLossyTracks(ALL_LOSSY)).toBe(true)
+    expect(hasLossyTracks([{ name: '01 A.flac', codec: 'flac', lossless: true }])).toBe(false)
+    expect(hasLossyTracks([])).toBe(false)
+  })
+})
+
 describe('selectionStore', () => {
   it('starts with every lossless track selected', () => {
     const store = selectionStore()
@@ -202,6 +212,48 @@ describe('selectionStore', () => {
     expect(store.names).toEqual([])
     expect(store.allSelected).toBe(false)
     store.toggleAll()
+    expect(store.names).toEqual(['01 A.flac', '03 C.flac'])
+  })
+
+  it('defaults skip-lossy on for a mixed directory and off for an all-lossless one', () => {
+    const mixed = selectionStore()
+    mixed.init('/music/Album', MIXED)
+    expect(mixed.hasLossy).toBe(true)
+    expect(mixed.skipLossy).toBe(true)
+
+    const lossless = selectionStore()
+    lossless.init('/music/Lossless', [{ name: '01 A.flac', codec: 'flac', lossless: true }])
+    expect(lossless.hasLossy).toBe(false)
+    expect(lossless.skipLossy).toBe(false)
+  })
+
+  // skip_lossy and files are mutually exclusive server-side (400 invalid_request),
+  // so an explicit per-row choice has to drop the toggle.
+  it('clears skip-lossy when a row or the header checkbox is touched', () => {
+    const store = selectionStore()
+    store.init('/music/Album', MIXED)
+    store.toggle('01 A.flac')
+    expect(store.skipLossy).toBe(false)
+
+    store.setSkipLossy(true)
+    store.toggleAll()
+    expect(store.skipLossy).toBe(false)
+  })
+
+  it('restores the full lossless selection when skip-lossy is set back on', () => {
+    const store = selectionStore()
+    store.init('/music/Album', MIXED)
+    store.toggle('01 A.flac')
+    expect(store.names).toEqual(['03 C.flac'])
+    store.setSkipLossy(true)
+    expect(store.names).toEqual(['01 A.flac', '03 C.flac'])
+  })
+
+  it('leaves the selection alone when skip-lossy is switched off', () => {
+    const store = selectionStore()
+    store.init('/music/Album', MIXED)
+    store.setSkipLossy(false)
+    expect(store.skipLossy).toBe(false)
     expect(store.names).toEqual(['01 A.flac', '03 C.flac'])
   })
 

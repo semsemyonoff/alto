@@ -303,6 +303,32 @@
   box-shadow: 0 0 10px var(--danger);
 }
 
+/* Selection options: the skip-lossy toggle and the pass-through copy checkbox. */
+.dock-opts {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.dock-check {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-family: var(--fm);
+  font-size: 11.5px;
+  color: var(--ink-dim);
+  cursor: pointer;
+}
+
+.dock-check input {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  flex: 0 0 auto;
+  accent-color: var(--teal);
+  cursor: pointer;
+}
+
 .dock-result {
   font-family: var(--fm);
   font-size: 11.5px;

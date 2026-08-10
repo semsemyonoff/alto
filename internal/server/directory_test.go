@@ -43,6 +43,7 @@ func minimalDirTemplates(t *testing.T) string {
 			`<td class="track-channels">{{.Channels}}</td>`+
 			`<td class="track-size">{{.Size}}</td></tr>`+
 			`{{end}}`+
+			`{{if .Tracks}}<aside id="tc-dock" data-can-transcode="{{.CanTranscode}}" data-track-count="{{.TrackCount}}"></aside>{{end}}`+
 			`</div></body></html>{{end}}`)
 
 	return dir
@@ -330,6 +331,11 @@ func TestHandleDirPage_MixedCodecs(t *testing.T) {
 	}
 	if !strings.Contains(body, "Mixed") {
 		t.Errorf("response should contain 'Mixed' codec summary; got:\n%s", body)
+	}
+	// A mixed directory is transcodable from the page: the dock narrows it down
+	// with skip_lossy / files rather than being disabled outright.
+	if !strings.Contains(body, `data-can-transcode="true"`) {
+		t.Errorf("mixed directory should be transcodable (partial selection); got:\n%s", body)
 	}
 }
 
@@ -744,8 +750,9 @@ func TestBuildDirPageData_LossyTracksCannotTranscode(t *testing.T) {
 }
 
 // TestBuildDirPageData_LosslessBreakdown pins the per-track lossless data the
-// selection UI is built on. CanTranscode is deliberately left all-or-nothing here —
-// it is loosened in the same change that teaches the dock to send skip_lossy.
+// selection UI is built on, and the page's CanTranscode gate: "at least one
+// lossless track", not the API's all-or-nothing canTranscodeTracks. A mixed
+// directory reaches START, which then sends skip_lossy or an explicit files list.
 func TestBuildDirPageData_LosslessBreakdown(t *testing.T) {
 	lib := LibraryConfig{ID: 1, Name: "Music", Path: "/music"}
 	dir := &db.Directory{ID: 5, LibraryID: 1, Path: "Album"}
@@ -780,7 +787,7 @@ func TestBuildDirPageData_LosslessBreakdown(t *testing.T) {
 			wantLossless:     []bool{true, false, true},
 			wantCount:        2,
 			wantHasLossy:     true,
-			wantCanTranscode: false,
+			wantCanTranscode: true,
 		},
 		{
 			name: "all lossy",

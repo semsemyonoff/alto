@@ -137,6 +137,20 @@
         </div>
       </div>
 
+      <div x-show="hasLossy || showCopySkipped">
+        <div class="flabel">Selection</div>
+        <div class="dock-opts">
+          <label class="dock-check" x-show="hasLossy">
+            <input type="checkbox" id="tc_skip_lossy" :checked="skipLossy" @change="setSkipLossy($el.checked)">
+            <span>Skip lossy (<span x-text="lossyCount"></span>)</span>
+          </label>
+          <label class="dock-check" x-show="showCopySkipped">
+            <input type="checkbox" id="tc_copy_skipped" x-model="copySkipped">
+            <span>Copy skipped to output</span>
+          </label>
+        </div>
+      </div>
+
       <p class="dock-result" id="tc_result" :class="resultOk ? 'ok' : 'err'" x-show="resultText" x-text="resultText"></p>
 
       <p class="dock-error" id="tc_error" x-show="error" x-text="error"></p>

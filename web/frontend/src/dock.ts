@@ -46,6 +46,14 @@ export interface TranscodeRequestInput {
   codec: Codec
   preset: string
   outputMode: OutputMode
+  /** The dock's "Skip lossy" toggle — server-side sugar for "every lossless track". */
+  skipLossy?: boolean
+  /** The selected lossless filenames, in directory order. */
+  files?: string[]
+  /** Tracks in the directory, so a full selection can be told from a subset. */
+  trackCount?: number
+  /** Copy the unselected tracks into the output verbatim. */
+  copySkipped?: boolean
 }
 
 export interface TranscodeRequestBody {
@@ -53,47 +61,86 @@ export interface TranscodeRequestBody {
   codec: string
   preset: string
   output_mode: string
+  skip_lossy?: boolean
+  files?: string[]
+  copy_skipped?: boolean
 }
 
-/** Builds the JSON body for POST /api/transcode, matching the server's transcodeRequest shape. */
+/** How many of the directory's tracks the current selection leaves out. */
+export function skippedCount(trackCount: number, selectedCount: number): number {
+  return Math.max(0, trackCount - selectedCount)
+}
+
+/**
+ * Builds the JSON body for POST /api/transcode, matching the server's
+ * transcodeRequest shape.
+ *
+ * `skip_lossy` and `files` are mutually exclusive server-side (400
+ * invalid_request), and an empty `files` is rejected outright, so at most one is
+ * ever emitted. A selection covering the whole directory sends neither, keeping
+ * an all-lossless album on the request shape it had before per-track selection.
+ */
 export function buildTranscodeRequestBody(input: TranscodeRequestInput): TranscodeRequestBody {
-  return {
+  const body: TranscodeRequestBody = {
     path: input.path,
     codec: input.codec,
     preset: input.preset,
     output_mode: input.outputMode,
   }
+  const files = input.files ?? []
+  const trackCount = input.trackCount ?? files.length
+  if (input.skipLossy) {
+    body.skip_lossy = true
+  } else if (files.length > 0 && files.length < trackCount) {
+    body.files = files
+  }
+  // The server refuses copy_skipped in replace mode (the originals are already
+  // in place) and it is meaningless with nothing skipped, so it is only sent
+  // where the checkbox is actually offered.
+  if (input.copySkipped && input.outputMode !== 'replace' && skippedCount(trackCount, files.length) > 0) {
+    body.copy_skipped = true
+  }
+  return body
+}
+
+/** The inputs both START gating and its status line are derived from. */
+export interface StartState {
+  /** The directory holds at least one lossless track (server-rendered). */
+  canTranscode: boolean
+  trackCount: number
+  selectedCount: number
+  starting: boolean
+  outputMode: OutputMode
+  activeInQueue: boolean
 }
 
 /**
  * Reports whether the dock's START control should be enabled. START requires a
- * transcodable directory with tracks, an explicitly chosen output destination,
- * no in-flight start, and no active (queued/running) job already for this album.
+ * directory with at least one selected lossless track, an explicitly chosen
+ * output destination, no in-flight start, and no active (queued/running) job
+ * already for this album.
  */
-export function canStartTranscode(
-  canTranscode: boolean,
-  trackCount: number,
-  starting: boolean,
-  outputMode: OutputMode,
-  activeInQueue: boolean,
-): boolean {
-  return canTranscode && trackCount > 0 && !starting && outputMode !== '' && !activeInQueue
+export function canStartTranscode(s: StartState): boolean {
+  return (
+    s.canTranscode &&
+    s.trackCount > 0 &&
+    s.selectedCount > 0 &&
+    !s.starting &&
+    s.outputMode !== '' &&
+    !s.activeInQueue
+  )
 }
 
-/** The status line shown under START — a disabled reason, or the track count when ready. */
-export function startStatusText(
-  canTranscode: boolean,
-  trackCount: number,
-  starting: boolean,
-  outputMode: OutputMode,
-  activeInQueue: boolean,
-): string {
-  if (activeInQueue) return 'Already in the queue'
-  if (starting) return 'Starting…'
-  if (trackCount <= 0) return 'No tracks to transcode'
-  if (!canTranscode) return 'Lossless-only — this directory has lossy tracks'
-  if (outputMode === '') return 'Choose an output destination'
-  return `${trackCount} track${trackCount === 1 ? '' : 's'}`
+/** The status line shown under START — a disabled reason, or the selection size when ready. */
+export function startStatusText(s: StartState): string {
+  if (s.activeInQueue) return 'Already in the queue'
+  if (s.starting) return 'Starting…'
+  if (s.trackCount <= 0) return 'No tracks to transcode'
+  if (!s.canTranscode) return 'No lossless tracks'
+  if (s.selectedCount <= 0) return 'Nothing selected'
+  if (s.outputMode === '') return 'Choose an output destination'
+  if (s.selectedCount < s.trackCount) return `${s.selectedCount} of ${s.trackCount} tracks`
+  return `${s.selectedCount} track${s.selectedCount === 1 ? '' : 's'}`
 }
 
 export interface DockConfig {
@@ -123,6 +170,7 @@ interface DockData {
   preset: string
   presetOpen: boolean
   outputMode: OutputMode
+  copySkipped: boolean
   starting: boolean
   error: string
   path: string
@@ -134,12 +182,40 @@ interface DockData {
   init(): void
   readonly presetLabel: string
   readonly activeInQueue: boolean
+  readonly selectedNames: string[]
+  readonly selectedCount: number
+  readonly losslessCount: number
+  readonly lossyCount: number
+  readonly hasLossy: boolean
+  readonly skipLossy: boolean
+  readonly skippedCount: number
+  readonly showCopySkipped: boolean
+  readonly startState: StartState
   readonly canStart: boolean
   readonly statusText: string
+  setSkipLossy(on: boolean): void
   setCodec(codec: Codec): void
   selectPreset(name: string): void
   start(): Promise<void>
   reindex(): void
+}
+
+/** The slice of `$store.selection` the dock reads; see selection.ts for the full store. */
+interface DockSelectionStore {
+  skipLossy: boolean
+  losslessCount: number
+  names: string[]
+  setSkipLossy(on: boolean): void
+}
+
+interface DockStores {
+  jobs?: { isActive(dir: string): boolean }
+  selection?: DockSelectionStore
+}
+
+/** Alpine injects `$store` onto the component instance at runtime; `this` is untyped there. */
+function stores(self: unknown): DockStores | undefined {
+  return (self as { $store?: DockStores }).$store
 }
 
 /** Alpine.data factory registered as `altoDock` and referenced via `x-data="altoDock()"`. */
@@ -154,6 +230,7 @@ export function altoDock(): DockData {
     // every mode button a real toggle (clicking the would-be default is no
     // longer a no-op) and gates START until a destination is picked.
     outputMode: '',
+    copySkipped: false,
     starting: false,
     error: '',
     path: '',
@@ -181,14 +258,55 @@ export function altoDock(): DockData {
     // Whether this album already has a queued/running job, read from the shared
     // `jobs` store the queue panel keeps in sync.
     get activeInQueue(): boolean {
-      const store = (this as unknown as { $store?: { jobs?: { isActive(dir: string): boolean } } }).$store
-      return store?.jobs?.isActive(this.path) ?? false
+      return stores(this)?.jobs?.isActive(this.path) ?? false
+    },
+
+    // The per-track selection lives in the `selection` store, shared with the
+    // track table's checkbox column. Without it (no tracks rendered) the dock
+    // falls back to "nothing selectable", which disables START.
+    get selectedNames(): string[] {
+      return stores(this)?.selection?.names ?? []
+    },
+    get selectedCount(): number {
+      return this.selectedNames.length
+    },
+    get losslessCount(): number {
+      return stores(this)?.selection?.losslessCount ?? 0
+    },
+    get lossyCount(): number {
+      return Math.max(0, this.trackCount - this.losslessCount)
+    },
+    get hasLossy(): boolean {
+      return this.lossyCount > 0
+    },
+    get skipLossy(): boolean {
+      return stores(this)?.selection?.skipLossy ?? false
+    },
+    setSkipLossy(on: boolean) {
+      stores(this)?.selection?.setSkipLossy(on)
+    },
+    get skippedCount(): number {
+      return skippedCount(this.trackCount, this.selectedCount)
+    },
+    get showCopySkipped(): boolean {
+      return this.skippedCount > 0 && this.outputMode !== 'replace'
+    },
+
+    get startState(): StartState {
+      return {
+        canTranscode: this.canTranscode,
+        trackCount: this.trackCount,
+        selectedCount: this.selectedCount,
+        starting: this.starting,
+        outputMode: this.outputMode,
+        activeInQueue: this.activeInQueue,
+      }
     },
     get canStart(): boolean {
-      return canStartTranscode(this.canTranscode, this.trackCount, this.starting, this.outputMode, this.activeInQueue)
+      return canStartTranscode(this.startState)
     },
     get statusText(): string {
-      return startStatusText(this.canTranscode, this.trackCount, this.starting, this.outputMode, this.activeInQueue)
+      return startStatusText(this.startState)
     },
 
     setCodec(codec: Codec) {
@@ -219,6 +337,10 @@ export function altoDock(): DockData {
         codec: this.codec,
         preset: this.preset,
         outputMode: this.outputMode,
+        skipLossy: this.skipLossy,
+        files: this.selectedNames,
+        trackCount: this.trackCount,
+        copySkipped: this.copySkipped,
       })
 
       try {
@@ -227,8 +349,12 @@ export function altoDock(): DockData {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
         })
-        const data: { job_id?: string; error?: string } = await res.json().catch(() => ({}))
+        const data: { job_id?: string; error?: string; code?: string } = await res.json().catch(() => ({}))
         if (!res.ok || !data.job_id) {
+          // Every rejection now answers the {error, code} envelope, so the real
+          // reason reaches the user. The generic text is not dead code: it still
+          // covers a body that isn't JSON at all (proxy error page, truncated
+          // response), where the .catch above yields {}.
           this.error = data.error || 'Failed to start transcoding'
           this.starting = false
           return

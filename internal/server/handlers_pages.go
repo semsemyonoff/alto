@@ -458,6 +458,10 @@ func isLosslessCodec(codec string) bool {
 	}
 }
 
+// canTranscodeTracks reports whether a directory may be transcoded with no
+// selection at all — every track must be lossless. It gates POST /api/transcode's
+// default path only; the directory page's own CanTranscode is looser (see
+// buildDirPageData), because the dock can ask for a subset.
 func canTranscodeTracks(tracks []db.Track) bool {
 	if len(tracks) == 0 {
 		return false
@@ -617,6 +621,9 @@ func buildDirPageData(lib LibraryConfig, dir *db.Directory, tracks []db.Track, r
 		totalDuration += t.Duration
 		totalSize += t.Size
 	}
+	// The page gate is "at least one lossless track", not the API's all-or-nothing
+	// canTranscodeTracks: the dock narrows a mixed directory down with skip_lossy
+	// or an explicit files list, so START must be reachable there.
 	return dirPageData{
 		Path:          resolvedPath,
 		PathEncoded:   url.QueryEscape(resolvedPath),
@@ -626,7 +633,7 @@ func buildDirPageData(lib LibraryConfig, dir *db.Directory, tracks []db.Track, r
 		HasCover:      dir.HasCover,
 		CodecSummary:  dir.CodecSummary,
 		CodecClass:    codecClass(dir.CodecSummary),
-		CanTranscode:  canTranscodeTracks(tracks),
+		CanTranscode:  losslessCount > 0,
 		TrackCount:    len(tracks),
 		LosslessCount: losslessCount,
 		HasLossy:      losslessCount < len(tracks),
