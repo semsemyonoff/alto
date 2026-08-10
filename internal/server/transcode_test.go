@@ -433,6 +433,168 @@ func TestHandleTranscodeStart_NoSelectionUnchanged(t *testing.T) {
 	}
 }
 
+// jobPassthroughNames returns the file names the started job will copy verbatim.
+func jobPassthroughNames(t *testing.T, srv *Server, jobID string) []string {
+	t.Helper()
+	js, ok := srv.jobs.get(jobID)
+	if !ok {
+		t.Fatalf("job %q not found", jobID)
+	}
+	srv.jobs.mu.Lock()
+	defer srv.jobs.mu.Unlock()
+	names := make([]string, 0, len(js.job.Passthrough))
+	for _, f := range js.job.Passthrough {
+		names = append(names, f.Name)
+	}
+	return names
+}
+
+// startedJobID posts a transcode request that must be accepted and returns its job ID.
+func startedJobID(t *testing.T, srv *Server, body map[string]any) string {
+	t.Helper()
+	w := postTranscode(t, srv, body)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202: %s", w.Code, w.Body.String())
+	}
+	return acceptedBody(t, w).JobID
+}
+
+// TestHandleTranscodeStart_CopySkipped covers copy_skipped end to end: the
+// skipped tracks become the job's pass-through list, and only when asked for.
+func TestHandleTranscodeStart_CopySkipped(t *testing.T) {
+	t.Run("mixed album produces a complete output directory", func(t *testing.T) {
+		srv, dirPath := newTestServerWithDirTracks(t, &mockEngine{}, mixedTracks)
+		id := startedJobID(t, srv, map[string]any{
+			"path": dirPath, "preset": "Balanced", "output_mode": "shared",
+			"skip_lossy": true, "copy_skipped": true,
+		})
+
+		if got := jobFileNames(t, srv, id); strings.Join(got, ",") != "01.flac,03.flac" {
+			t.Errorf("job files = %v, want the lossless tracks", got)
+		}
+		if got := jobPassthroughNames(t, srv, id); strings.Join(got, ",") != "02.mp3" {
+			t.Errorf("job passthrough = %v, want the lossy track", got)
+		}
+	})
+
+	t.Run("without copy_skipped nothing is passed through", func(t *testing.T) {
+		srv, dirPath := newTestServerWithDirTracks(t, &mockEngine{}, mixedTracks)
+		id := startedJobID(t, srv, map[string]any{
+			"path": dirPath, "preset": "Balanced", "skip_lossy": true,
+		})
+		if got := jobPassthroughNames(t, srv, id); len(got) != 0 {
+			t.Errorf("job passthrough = %v, want none", got)
+		}
+	})
+
+	t.Run("explicit files selection passes the rest through", func(t *testing.T) {
+		srv, dirPath := newTestServerWithDirTracks(t, &mockEngine{}, mixedTracks)
+		id := startedJobID(t, srv, map[string]any{
+			"path": dirPath, "preset": "Balanced",
+			"files": []string{"01.flac"}, "copy_skipped": true,
+		})
+		if got := jobPassthroughNames(t, srv, id); strings.Join(got, ",") != "02.mp3,03.flac" {
+			t.Errorf("job passthrough = %v, want the unselected tracks", got)
+		}
+	})
+
+	t.Run("no selection leaves the pass-through list empty", func(t *testing.T) {
+		srv, dirPath := newTestServerWithDirTracks(t, &mockEngine{}, flacTracks)
+		id := startedJobID(t, srv, map[string]any{
+			"path": dirPath, "preset": "Balanced", "copy_skipped": true,
+		})
+		if got := jobPassthroughNames(t, srv, id); len(got) != 0 {
+			t.Errorf("job passthrough = %v, want none", got)
+		}
+	})
+}
+
+// TestHandleTranscodeStart_CopySkippedWithReplace pins the refusal: in replace
+// mode the skipped originals are already in place, so the flag is meaningless
+// and silently ignoring it would hide the mistake.
+func TestHandleTranscodeStart_CopySkippedWithReplace(t *testing.T) {
+	t.Run("rejected with a dedicated code", func(t *testing.T) {
+		srv, dirPath := newTestServerWithDirTracks(t, &mockEngine{}, mixedTracks)
+		w := postTranscode(t, srv, map[string]any{
+			"path": dirPath, "preset": "Balanced", "output_mode": "replace",
+			"skip_lossy": true, "copy_skipped": true,
+		})
+		assertAPIError(t, w, http.StatusBadRequest, codeCopySkippedNotApplicable)
+	})
+
+	t.Run("replace without copy_skipped still starts", func(t *testing.T) {
+		srv, dirPath := newTestServerWithDirTracks(t, &mockEngine{}, mixedTracks)
+		w := postTranscode(t, srv, map[string]any{
+			"path": dirPath, "preset": "Balanced", "output_mode": "replace", "skip_lossy": true,
+		})
+		if w.Code != http.StatusAccepted {
+			t.Fatalf("status = %d, want 202: %s", w.Code, w.Body.String())
+		}
+	})
+}
+
+// TestHandleTranscodeStart_PassthroughNameConflict extends the collision
+// detector to the pass-through set: a selected "01 A.ape" renders to
+// "01 A.flac", which is exactly the name a copied "01 A.flac" would claim.
+func TestHandleTranscodeStart_PassthroughNameConflict(t *testing.T) {
+	// "01 A.flac" is lossless, so skip_lossy would keep it; an explicit files
+	// list is the only way to leave it unselected.
+	tracks := []db.Track{
+		{Filename: "01 A.ape", Codec: "ape"},
+		{Filename: "01 A.flac", Codec: "flac"},
+	}
+
+	t.Run("selected versus pass-through", func(t *testing.T) {
+		srv, dirPath := newTestServerWithDirTracks(t, &mockEngine{}, tracks)
+		w := postTranscode(t, srv, map[string]any{
+			"path": dirPath, "preset": "Balanced",
+			"files": []string{"01 A.ape"}, "copy_skipped": true,
+		})
+		assertAPIError(t, w, http.StatusUnprocessableEntity, codeOutputNameConflict)
+
+		var resp struct {
+			Conflicts []outputConflictDTO `json:"conflicts"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatal(err)
+		}
+		if len(resp.Conflicts) != 1 || resp.Conflicts[0].Output != "01 A.flac" {
+			t.Fatalf("conflicts = %+v, want one on %q", resp.Conflicts, "01 A.flac")
+		}
+		if strings.Join(resp.Conflicts[0].Sources, ",") != "01 A.ape,01 A.flac" {
+			t.Errorf("sources = %v, want the selected source then the pass-through", resp.Conflicts[0].Sources)
+		}
+	})
+
+	t.Run("the same selection without copy_skipped starts", func(t *testing.T) {
+		srv, dirPath := newTestServerWithDirTracks(t, &mockEngine{}, tracks)
+		w := postTranscode(t, srv, map[string]any{
+			"path": dirPath, "preset": "Balanced", "files": []string{"01 A.ape"},
+		})
+		if w.Code != http.StatusAccepted {
+			t.Fatalf("status = %d, want 202: %s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("selected versus selected still fails with copy_skipped on", func(t *testing.T) {
+		srv, dirPath := newTestServerWithDirTracks(t, &mockEngine{}, tracks)
+		w := postTranscode(t, srv, map[string]any{
+			"path": dirPath, "preset": "Balanced", "copy_skipped": true,
+		})
+		assertAPIError(t, w, http.StatusUnprocessableEntity, codeOutputNameConflict)
+	})
+
+	t.Run("a pass-through name distinct from every output is fine", func(t *testing.T) {
+		srv, dirPath := newTestServerWithDirTracks(t, &mockEngine{}, mixedTracks)
+		w := postTranscode(t, srv, map[string]any{
+			"path": dirPath, "preset": "Balanced", "skip_lossy": true, "copy_skipped": true,
+		})
+		if w.Code != http.StatusAccepted {
+			t.Fatalf("status = %d, want 202: %s", w.Code, w.Body.String())
+		}
+	})
+}
+
 // acceptedBody decodes a 202 transcode response.
 func acceptedBody(t *testing.T, w *httptest.ResponseRecorder) transcodeAcceptedDTO {
 	t.Helper()

@@ -137,23 +137,31 @@ type outputConflictDTO struct {
 	Sources []string `json:"sources"`
 }
 
-// detectOutputConflicts finds selected tracks that collapse onto a single
-// output name once their extension is rewritten for the target codec — e.g.
-// "01 A.ape" and "01 A.flac" both rendering to "01 A.flac". ffmpeg runs with
-// -y, so without this check the second source silently overwrites the first
-// and the job reports done having produced one file instead of two.
+// detectOutputConflicts finds files that collapse onto a single output name.
+// Two ways that happens, and one multiset covers both: a selected track's
+// extension is rewritten for the target codec, so "01 A.ape" and "01 A.flac"
+// both render to "01 A.flac"; and a pass-through file keeps its own name, so a
+// copied "01 A.flac" lands on the output of a transcoded "01 A.ape". ffmpeg
+// runs with -y and copyPassthroughFiles truncates, so without this check one
+// file silently overwrites the other and the job reports done having produced
+// fewer files than it was given.
 //
 // Conflicts come back sorted by output name, and their sources in directory
-// order, so the error body is stable.
-func detectOutputConflicts(selected []db.Track, codec transcode.Codec) []outputConflictDTO {
-	sources := make(map[string][]string, len(selected))
+// order — selected first, then pass-through — so the error body is stable.
+func detectOutputConflicts(selected, passthrough []db.Track, codec transcode.Codec) []outputConflictDTO {
+	sources := make(map[string][]string, len(selected)+len(passthrough))
 	var order []string
-	for _, t := range selected {
-		out := transcode.OutFilename(t.Filename, codec)
+	add := func(out, src string) {
 		if _, seen := sources[out]; !seen {
 			order = append(order, out)
 		}
-		sources[out] = append(sources[out], t.Filename)
+		sources[out] = append(sources[out], src)
+	}
+	for _, t := range selected {
+		add(transcode.OutFilename(t.Filename, codec), t.Filename)
+	}
+	for _, t := range passthrough {
+		add(t.Filename, t.Filename)
 	}
 
 	var conflicts []outputConflictDTO
@@ -166,18 +174,28 @@ func detectOutputConflicts(selected []db.Track, codec transcode.Codec) []outputC
 	return conflicts
 }
 
-// skippedReport lists the tracks of all that are absent from selected, in the
-// order they appear in all.
-func skippedReport(all, selected []db.Track, reason string) []skippedDTO {
+// unselectedTracks lists the tracks of all that are absent from selected, in
+// the order they appear in all. This is the pass-through candidate set: what
+// copy_skipped copies verbatim, and what skippedReport describes.
+func unselectedTracks(all, selected []db.Track) []db.Track {
 	keep := make(map[string]struct{}, len(selected))
 	for _, t := range selected {
 		keep[t.Filename] = struct{}{}
 	}
-	var out []skippedDTO
+	var out []db.Track
 	for _, t := range all {
-		if _, ok := keep[t.Filename]; ok {
-			continue
+		if _, ok := keep[t.Filename]; !ok {
+			out = append(out, t)
 		}
+	}
+	return out
+}
+
+// skippedReport lists the tracks of all that are absent from selected, in the
+// order they appear in all.
+func skippedReport(all, selected []db.Track, reason string) []skippedDTO {
+	var out []skippedDTO
+	for _, t := range unselectedTracks(all, selected) {
 		out = append(out, skippedDTO{Name: t.Filename, Codec: t.Codec, Reason: reason})
 	}
 	return out

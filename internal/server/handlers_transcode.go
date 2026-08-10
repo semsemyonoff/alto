@@ -157,8 +157,10 @@ func (s *Server) handleTranscodeStart(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// Without a selection nothing is skipped, so the reason never applies.
+	var unselected []db.Track
 	var skipped []skippedDTO
 	if skipReason != "" {
+		unselected = unselectedTracks(tracks, selected)
 		skipped = skippedReport(tracks, selected, skipReason)
 	}
 
@@ -174,24 +176,33 @@ func (s *Server) handleTranscodeStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// In replace mode the skipped originals are already in place, so there is
+	// nothing to copy. Refusing beats ignoring the flag: a client that asked for
+	// a complete album learns its request made no sense.
+	if req.CopySkipped && outputMode == transcode.OutputReplace {
+		writeAPIError(w, http.StatusBadRequest, codeCopySkippedNotApplicable,
+			`"copy_skipped" does not apply to output_mode "replace"; the skipped files are already in place`, nil)
+		return
+	}
+
+	// The skipped tracks reach the output only when explicitly asked for:
+	// copyNonAudioFiles filters out everything with an audio extension.
+	var passthrough []db.Track
+	if req.CopySkipped {
+		passthrough = unselected
+	}
+
 	// Distinct sources can collapse onto one output name once the extension is
-	// rewritten ("01 A.ape" and "01 A.flac" both render to "01 A.flac"), and
-	// ffmpeg runs with -y — so refuse before anything is written.
-	if conflicts := detectOutputConflicts(selected, preset.Codec); len(conflicts) > 0 {
+	// rewritten ("01 A.ape" and "01 A.flac" both render to "01 A.flac"), and a
+	// pass-through copy keeps its own name — so refuse before anything is written.
+	if conflicts := detectOutputConflicts(selected, passthrough, preset.Codec); len(conflicts) > 0 {
 		writeAPIError(w, http.StatusUnprocessableEntity, codeOutputNameConflict,
 			"several selected files would produce the same output file name",
 			map[string]any{"conflicts": conflicts})
 		return
 	}
 
-	files := make([]transcode.FileInfo, len(selected))
-	for i, t := range selected {
-		files[i] = transcode.FileInfo{
-			Name:     t.Filename,
-			Duration: t.Duration,
-			Size:     t.Size,
-		}
-	}
+	files := toFileInfos(selected)
 
 	// Resolve the library root the same way LibraryOnlyValidate resolved SourceDir,
 	// so filepath.Rel(LibraryRoot, SourceDir) in the transcode engine is comparing
@@ -228,6 +239,7 @@ func (s *Server) handleTranscodeStart(w http.ResponseWriter, r *http.Request) {
 		LibraryRoot: resolvedLibRoot,
 		SourceDir:   resolved,
 		Files:       files,
+		Passthrough: toFileInfos(passthrough),
 		Preset:      preset,
 		OutputMode:  outputMode,
 		OutputDir:   s.cfg.OutputDir,
@@ -250,6 +262,20 @@ func (s *Server) handleTranscodeStart(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusAccepted, newTranscodeAcceptedDTO(id, selected, skipped))
+}
+
+// toFileInfos converts indexed tracks to the engine's file descriptors. An
+// empty set stays nil, so a job without pass-through files is indistinguishable
+// from one built before the field existed.
+func toFileInfos(tracks []db.Track) []transcode.FileInfo {
+	if len(tracks) == 0 {
+		return nil
+	}
+	out := make([]transcode.FileInfo, len(tracks))
+	for i, t := range tracks {
+		out[i] = transcode.FileInfo{Name: t.Filename, Duration: t.Duration, Size: t.Size}
+	}
+	return out
 }
 
 // writeSelectionError maps a validateFileNames sentinel to its API error code,
