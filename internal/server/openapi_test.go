@@ -2,7 +2,8 @@ package server
 
 // The OpenAPI document at web/static/openapi.yaml is hand-written, so nothing
 // but a test keeps it honest. The drift tests here hold it to the code: the
-// document's path and method set against Server.routes().
+// document's path and method set against Server.routes(), and its Error.code
+// enum against allAPIErrorCodes.
 //
 // What they do not do is validate the document. The parse below is a minimal
 // YAML decode, so a YAML-valid but OpenAPI-invalid document passes forever;
@@ -36,12 +37,24 @@ var openAPIMethods = []string{"get", "put", "post", "delete", "options", "head",
 // deliberately minimal — these tests check that the document agrees with the
 // code, not that it is a valid OpenAPI document.
 type openAPIDoc struct {
-	Paths map[string]pathItem `yaml:"paths"`
+	Paths      map[string]pathItem `yaml:"paths"`
+	Components openAPIComponents   `yaml:"components"`
 }
 
 // pathItem keeps operations as raw nodes: the path drift test needs the method
 // keys, not the operation bodies.
 type pathItem map[string]yaml.Node
+
+type openAPIComponents struct {
+	Schemas map[string]schemaNode `yaml:"schemas"`
+}
+
+// schemaNode is one component schema, decoded only as far as the drift tests
+// reach: the property names and, for scalars, the enum.
+type schemaNode struct {
+	Enum       []string              `yaml:"enum"`
+	Properties map[string]schemaNode `yaml:"properties"`
+}
 
 // fetchOpenAPIDocument serves the document through the real handler rather than
 // reading the file by path: it exercises handleOpenAPI, and keeps the document's
@@ -68,16 +81,23 @@ func parseOpenAPIDocument(t *testing.T, data []byte) openAPIDoc {
 	if err := yaml.Unmarshal(data, &doc); err != nil {
 		t.Fatalf("parse openapi.yaml: %v", err)
 	}
-	if len(doc.Paths) == 0 {
-		t.Fatal("openapi.yaml declares no paths")
-	}
 	return doc
 }
 
-// loadOpenAPIDocument fetches and parses the served document.
+// loadOpenAPIDocument fetches and parses the served document. The emptiness
+// checks are here rather than in the parse so that fixtures may exercise one
+// section of the document without carrying the others.
 func loadOpenAPIDocument(t *testing.T) openAPIDoc {
 	t.Helper()
-	return parseOpenAPIDocument(t, fetchOpenAPIDocument(t))
+
+	doc := parseOpenAPIDocument(t, fetchOpenAPIDocument(t))
+	if len(doc.Paths) == 0 {
+		t.Fatal("openapi.yaml declares no paths")
+	}
+	if len(doc.Components.Schemas) == 0 {
+		t.Fatal("openapi.yaml declares no component schemas")
+	}
+	return doc
 }
 
 // apiRouteMethods maps each registered /api/ pattern to its methods, lowercased
@@ -173,6 +193,228 @@ func TestOpenAPICoversEveryAPIRoute(t *testing.T) {
 	for _, path := range diff.methodMismatches {
 		t.Errorf("%s: server registers %v, openapi.yaml documents %v",
 			path, registered[path], documented[path])
+	}
+}
+
+// errorCodeEnum reads components.schemas.Error.properties.code.enum — the
+// document's half of the error-code contract. A missing Error schema, or an
+// Error without a code enum, yields an empty slice, which the diff reports as
+// every code being undocumented.
+func errorCodeEnum(doc openAPIDoc) []string {
+	return doc.Components.Schemas["Error"].Properties["code"].Enum
+}
+
+// codeDiff is the outcome of comparing allAPIErrorCodes against the documented
+// enum. Order is deliberately not compared — the document keeps the constant
+// block's order for readability, but a reordering is not a contract change.
+type codeDiff struct {
+	undocumented []string // code the server can emit, absent from the enum
+	unknown      []string // enum value backed by no code constant
+	duplicated   []string // enum value listed more than once; set equality cannot see it
+}
+
+func (d codeDiff) empty() bool {
+	return len(d.undocumented) == 0 && len(d.unknown) == 0 && len(d.duplicated) == 0
+}
+
+func diffErrorCodes(codes, enum []string) codeDiff {
+	var diff codeDiff
+
+	inEnum := make(map[string]int, len(enum))
+	for _, value := range enum {
+		inEnum[value]++
+	}
+	inCode := make(map[string]bool, len(codes))
+	for _, code := range codes {
+		inCode[code] = true
+		if inEnum[code] == 0 {
+			diff.undocumented = append(diff.undocumented, code)
+		}
+	}
+
+	for _, value := range slices.Sorted(maps.Keys(inEnum)) {
+		if !inCode[value] {
+			diff.unknown = append(diff.unknown, value)
+		}
+		if inEnum[value] > 1 {
+			diff.duplicated = append(diff.duplicated, value)
+		}
+	}
+
+	return diff
+}
+
+// TestOpenAPIDocumentsEveryErrorCode is the error-code drift test:
+// allAPIErrorCodes must equal the document's Error.code enum in both
+// directions. It says nothing about *when* a code is returned — only that the
+// set of codes the server can emit is the set the document publishes.
+func TestOpenAPIDocumentsEveryErrorCode(t *testing.T) {
+	enum := errorCodeEnum(loadOpenAPIDocument(t))
+	if len(enum) == 0 {
+		t.Fatal("openapi.yaml has no components.schemas.Error.properties.code.enum")
+	}
+
+	diff := diffErrorCodes(allAPIErrorCodes, enum)
+
+	for _, code := range diff.undocumented {
+		t.Errorf("error code %q is in allAPIErrorCodes but missing from the Error.code enum", code)
+	}
+	for _, code := range diff.unknown {
+		t.Errorf("openapi.yaml documents error code %q, which no constant declares", code)
+	}
+	for _, code := range diff.duplicated {
+		t.Errorf("the Error.code enum lists %q more than once", code)
+	}
+}
+
+// TestDiffErrorCodes proves the comparison fails in both directions. Every
+// fixture goes through the real parse and the real enum lookup, so those are
+// exercised too.
+func TestDiffErrorCodes(t *testing.T) {
+	tests := []struct {
+		name         string
+		codes        []string
+		doc          string
+		undocumented []string
+		unknown      []string
+		duplicated   []string
+	}{
+		{
+			name:  "agreeing sets",
+			codes: []string{"invalid_request", "job_not_found"},
+			doc: `
+components:
+  schemas:
+    Error:
+      properties:
+        code:
+          enum:
+            - invalid_request
+            - job_not_found
+`,
+		},
+		{
+			name:  "order is not part of the contract",
+			codes: []string{"invalid_request", "job_not_found"},
+			doc: `
+components:
+  schemas:
+    Error:
+      properties:
+        code:
+          enum:
+            - job_not_found
+            - invalid_request
+`,
+		},
+		{
+			name:  "code missing from the document",
+			codes: []string{"invalid_request", "job_not_found"},
+			doc: `
+components:
+  schemas:
+    Error:
+      properties:
+        code:
+          enum:
+            - invalid_request
+`,
+			undocumented: []string{"job_not_found"},
+		},
+		{
+			name:  "documented code that no constant declares",
+			codes: []string{"invalid_request"},
+			doc: `
+components:
+  schemas:
+    Error:
+      properties:
+        code:
+          enum:
+            - invalid_request
+            - retired_code
+`,
+			unknown: []string{"retired_code"},
+		},
+		{
+			name:  "drift in both directions at once",
+			codes: []string{"invalid_request", "no_cover"},
+			doc: `
+components:
+  schemas:
+    Error:
+      properties:
+        code:
+          enum:
+            - invalid_request
+            - retired_code
+`,
+			undocumented: []string{"no_cover"},
+			unknown:      []string{"retired_code"},
+		},
+		{
+			name:  "duplicate enum entry",
+			codes: []string{"invalid_request", "no_cover"},
+			doc: `
+components:
+  schemas:
+    Error:
+      properties:
+        code:
+          enum:
+            - invalid_request
+            - no_cover
+            - invalid_request
+`,
+			duplicated: []string{"invalid_request"},
+		},
+		{
+			name:  "the enum moved or was renamed away",
+			codes: []string{"invalid_request"},
+			doc: `
+components:
+  schemas:
+    Error:
+      properties:
+        error:
+          type: string
+`,
+			undocumented: []string{"invalid_request"},
+		},
+		{
+			name:  "no Error schema at all",
+			codes: []string{"invalid_request"},
+			doc: `
+components:
+  schemas:
+    Version:
+      properties:
+        version:
+          type: string
+`,
+			undocumented: []string{"invalid_request"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			enum := errorCodeEnum(parseOpenAPIDocument(t, []byte(tt.doc)))
+			diff := diffErrorCodes(tt.codes, enum)
+
+			if !slices.Equal(diff.undocumented, tt.undocumented) {
+				t.Errorf("undocumented = %v, want %v", diff.undocumented, tt.undocumented)
+			}
+			if !slices.Equal(diff.unknown, tt.unknown) {
+				t.Errorf("unknown = %v, want %v", diff.unknown, tt.unknown)
+			}
+			if !slices.Equal(diff.duplicated, tt.duplicated) {
+				t.Errorf("duplicated = %v, want %v", diff.duplicated, tt.duplicated)
+			}
+			wantEmpty := tt.undocumented == nil && tt.unknown == nil && tt.duplicated == nil
+			if diff.empty() != wantEmpty {
+				t.Errorf("diff.empty() = %v, want %v", diff.empty(), wantEmpty)
+			}
+		})
 	}
 }
 
