@@ -2129,6 +2129,11 @@ func concreteURL(pattern string) string {
 func TestRoutesAreRegistered(t *testing.T) {
 	srv, _, _ := newTestServer(t)
 
+	// Without this the whole test evaporates on an empty table instead of failing.
+	if len(srv.routes()) == 0 {
+		t.Fatal("routes() is empty")
+	}
+
 	for _, rt := range srv.routes() {
 		t.Run(rt.method+" "+rt.pattern, func(t *testing.T) {
 			req := httptest.NewRequest(rt.method, concreteURL(rt.pattern), nil)
@@ -2146,6 +2151,10 @@ func TestRoutesAreRegistered(t *testing.T) {
 // assertion runs, so the duplicate is caught here as data instead.
 func TestRoutesTableNoDuplicates(t *testing.T) {
 	srv, _, _ := newTestServer(t)
+
+	if len(srv.routes()) == 0 {
+		t.Fatal("routes() is empty")
+	}
 
 	seen := make(map[string]struct{})
 	for _, rt := range srv.routes() {

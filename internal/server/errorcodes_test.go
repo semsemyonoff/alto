@@ -360,6 +360,12 @@ func checkRegisterRoutes(pkg astPackage) []string {
 		problems = append(problems, "registerRoutes does not loop over routes(); that table is what the OpenAPI drift test enumerates")
 	}
 
+	// inLoop counts registrations inside the routes() loop. The exemption is
+	// positional, so it has to be "exactly one": a second registration nested in
+	// that body would otherwise be whitelisted by position alone — the same back
+	// door as registering directly in registerRoutes, and equally invisible to
+	// the path drift test.
+	inLoop := 0
 	for _, f := range pkg.files {
 		for _, reg := range muxRegistrations(f) {
 			if reg.Pos() < decl.Pos() || reg.Pos() >= decl.End() {
@@ -368,6 +374,12 @@ func checkRegisterRoutes(pkg astPackage) []string {
 				continue
 			}
 			if loop != nil && reg.Pos() >= loop.Pos() && reg.Pos() < loop.End() {
+				inLoop++
+				if inLoop > 1 {
+					problems = append(problems, fmt.Sprintf(
+						"%s: a second registration inside the routes() loop; add the route to routes() instead",
+						pkg.pos(reg)))
+				}
 				continue // the table loop itself, whose pattern is built per entry
 			}
 			pattern := stringLiteral(reg.Args[0])
@@ -377,6 +389,10 @@ func checkRegisterRoutes(pkg astPackage) []string {
 					pkg.pos(reg), pattern))
 			}
 		}
+	}
+	if loop != nil && inLoop == 0 {
+		problems = append(problems, fmt.Sprintf(
+			"%s: the routes() loop registers nothing; the table would be inert", pkg.pos(loop)))
 	}
 	return problems
 }
@@ -420,6 +436,68 @@ func TestAllAPIErrorCodesNoDuplicates(t *testing.T) {
 		}
 		seen[code] = true
 	}
+}
+
+// TestAllJobStatusesMatchConstants pins allJobStatuses to the JobStatus const
+// block, the way checkCodeConstantsListed pins allAPIErrorCodes to the code
+// constants. Without it a new status constant leaves the enum drift test
+// (TestOpenAPIDocumentsEveryJobStatus) comparing the document against a stale
+// slice and passing.
+func TestAllJobStatusesMatchConstants(t *testing.T) {
+	declared := jobStatusConstants(parseServerPackage(t))
+	if len(declared) == 0 {
+		t.Fatal("no JobStatus constants found; the pass is looking in the wrong place")
+	}
+
+	listed := map[string]bool{}
+	for _, s := range allJobStatuses {
+		if listed[string(s)] {
+			t.Errorf("allJobStatuses lists %q more than once", s)
+		}
+		listed[string(s)] = true
+	}
+
+	for status := range declared {
+		if !listed[status] {
+			t.Errorf("JobStatus constant %q is not listed in allJobStatuses", status)
+		}
+	}
+	for status := range listed {
+		if !declared[status] {
+			t.Errorf("allJobStatuses lists %q, which no JobStatus constant declares", status)
+		}
+	}
+}
+
+// jobStatusConstants collects the values of every explicitly JobStatus-typed
+// constant in the package. The type is what identifies them — a name pattern
+// would miss a constant named otherwise, and the block has no iota to carry a
+// type across specs.
+func jobStatusConstants(pkg astPackage) map[string]bool {
+	declared := map[string]bool{}
+	for _, f := range pkg.files {
+		for _, d := range f.Decls {
+			gen, ok := d.(*ast.GenDecl)
+			if !ok || gen.Tok != token.CONST {
+				continue
+			}
+			for _, spec := range gen.Specs {
+				vs, ok := spec.(*ast.ValueSpec)
+				if !ok {
+					continue
+				}
+				if ident, ok := vs.Type.(*ast.Ident); !ok || ident.Name != "JobStatus" {
+					continue
+				}
+				for _, v := range vs.Values {
+					if lit := stringLiteral(v); lit != "" {
+						declared[lit] = true
+					}
+				}
+			}
+		}
+	}
+	return declared
 }
 
 func TestCheckCodeConstantsListed(t *testing.T) {
@@ -595,6 +673,27 @@ func (s *Server) registerDebugRoutes() {
 	s.mux.HandleFunc("GET /api/probe", s.handleProbe)
 }`},
 			want: "route registered outside registerRoutes",
+		},
+		{
+			name: "route smuggled into the routes() loop body",
+			srcs: []string{`package server
+func (s *Server) registerRoutes() {
+	for _, rt := range s.routes() {
+		s.mux.HandleFunc(rt.method+" "+rt.pattern, rt.handler)
+		s.mux.HandleFunc("GET /api/probe", s.handleProbe)
+	}
+}`},
+			want: "a second registration inside the routes() loop",
+		},
+		{
+			name: "routes() loop that registers nothing",
+			srcs: []string{`package server
+func (s *Server) registerRoutes() {
+	for _, rt := range s.routes() {
+		_ = rt
+	}
+}`},
+			want: "the routes() loop registers nothing",
 		},
 		{
 			name: "routes table no longer looped over",

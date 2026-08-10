@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
      section to ## [X.Y.Z] - <date> and uses it as the release body. -->
 
 ### Added
+- **The HTTP API now has a machine-readable contract.** `GET /api/openapi.yaml`
+  serves an OpenAPI 3.1 document covering every `/api/*` route, its request and
+  response schemas, and the full error-code enum — enough to generate a client
+  or drive ALTO without reading the README. Tests compare it against the code in
+  both directions, so a handler change that skips the document fails the suite.
 - **Mixed directories can be transcoded per track.** An album holding both
   lossless and lossy files no longer has to be all-or-nothing: tick *Skip lossy*
   or pick tracks by hand in the new checkbox column, and only the lossless ones

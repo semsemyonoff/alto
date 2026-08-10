@@ -3,8 +3,9 @@ package server
 // The OpenAPI document at web/static/openapi.yaml is hand-written, so nothing
 // but a test keeps it honest. The drift tests here hold it to the code: the
 // document's path and method set against Server.routes(), its Error.code enum
-// against allAPIErrorCodes, and each component schema's properties against the
-// json tags of the DTO struct behind it.
+// against allAPIErrorCodes, its JobStatus enum against allJobStatuses, each
+// component schema's properties against the json tags of the DTO struct behind
+// it, and info.version against the VERSION file.
 //
 // What they do not do is validate the document. The parse below is a minimal
 // YAML decode, so a YAML-valid but OpenAPI-invalid document passes forever;
@@ -17,7 +18,10 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -39,8 +43,13 @@ var openAPIMethods = []string{"get", "put", "post", "delete", "options", "head",
 // deliberately minimal — these tests check that the document agrees with the
 // code, not that it is a valid OpenAPI document.
 type openAPIDoc struct {
+	Info       openAPIInfo         `yaml:"info"`
 	Paths      map[string]pathItem `yaml:"paths"`
 	Components openAPIComponents   `yaml:"components"`
+}
+
+type openAPIInfo struct {
+	Version string `yaml:"version"`
 }
 
 // pathItem keeps operations as raw nodes: the path drift test needs the method
@@ -144,10 +153,6 @@ type routeDiff struct {
 	methodMismatches []string // path on both sides, differing method sets
 }
 
-func (d routeDiff) empty() bool {
-	return len(d.undocumented) == 0 && len(d.unregistered) == 0 && len(d.methodMismatches) == 0
-}
-
 // diffAPIRoutes compares registered routes against documented paths in both
 // directions. Both maps are path → sorted lowercase methods.
 func diffAPIRoutes(registered, documented map[string][]string) routeDiff {
@@ -215,10 +220,6 @@ type codeDiff struct {
 	duplicated   []string // enum value listed more than once; set equality cannot see it
 }
 
-func (d codeDiff) empty() bool {
-	return len(d.undocumented) == 0 && len(d.unknown) == 0 && len(d.duplicated) == 0
-}
-
 func diffErrorCodes(codes, enum []string) codeDiff {
 	var diff codeDiff
 
@@ -266,6 +267,86 @@ func TestOpenAPIDocumentsEveryErrorCode(t *testing.T) {
 	}
 	for _, code := range diff.duplicated {
 		t.Errorf("the Error.code enum lists %q more than once", code)
+	}
+}
+
+// TestOpenAPIVersionMatchesRelease pins info.version to the VERSION file. It is
+// the one number in the document no other drift test looks at, and README calls
+// the whole document test-backed — so without this a release bump would ship a
+// contract advertising the previous version. The release-cut workflow rewrites
+// both in the same commit (.forgejo/workflows/release-cut.yml).
+func TestOpenAPIVersionMatchesRelease(t *testing.T) {
+	_, filename, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	raw, err := os.ReadFile(filepath.Join(filepath.Dir(filename), "..", "..", "VERSION"))
+	if err != nil {
+		t.Fatalf("read VERSION: %v", err)
+	}
+	want := strings.TrimSpace(string(raw))
+	if want == "" {
+		t.Fatal("VERSION is empty")
+	}
+
+	if got := loadOpenAPIDocument(t).Info.Version; got != want {
+		t.Errorf("openapi.yaml info.version = %q, VERSION = %q; bump both together", got, want)
+	}
+}
+
+// TestOpenAPIDocumentsEveryJobStatus is the same drift test for the other
+// published string enum: allJobStatuses must equal the document's JobStatus
+// enum in both directions.
+//
+// JobEvent.status is a second copy of the same list and is checked too, because
+// it cannot be a $ref: a `remove` frame is the zero-valued struct, so it puts ""
+// on the wire, and the strict enum would reject the one frame the queue UI needs
+// to drop a row. That extra "" is the only permitted difference.
+func TestOpenAPIDocumentsEveryJobStatus(t *testing.T) {
+	doc := loadOpenAPIDocument(t)
+
+	statuses := make([]string, len(allJobStatuses))
+	for i, s := range allJobStatuses {
+		statuses[i] = string(s)
+	}
+
+	tests := []struct {
+		name  string
+		enum  []string
+		codes []string
+	}{
+		{
+			name:  "components.schemas.JobStatus.enum",
+			enum:  doc.Components.Schemas["JobStatus"].Enum,
+			codes: statuses,
+		},
+		{
+			// The zero value belongs to the wire format, not to the const block,
+			// so it is appended here rather than to allJobStatuses.
+			name:  "components.schemas.JobEvent.properties.status.enum",
+			enum:  doc.Components.Schemas["JobEvent"].Properties["status"].Enum,
+			codes: append(slices.Clone(statuses), ""),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if len(tt.enum) == 0 {
+				t.Fatalf("openapi.yaml has no %s", tt.name)
+			}
+
+			diff := diffErrorCodes(tt.codes, tt.enum)
+
+			for _, status := range diff.undocumented {
+				t.Errorf("job status %q is missing from %s", status, tt.name)
+			}
+			for _, status := range diff.unknown {
+				t.Errorf("%s lists %q, which no JobStatus constant declares", tt.name, status)
+			}
+			for _, status := range diff.duplicated {
+				t.Errorf("%s lists %q more than once", tt.name, status)
+			}
+		})
 	}
 }
 
@@ -412,10 +493,6 @@ components:
 			if !slices.Equal(diff.duplicated, tt.duplicated) {
 				t.Errorf("duplicated = %v, want %v", diff.duplicated, tt.duplicated)
 			}
-			wantEmpty := tt.undocumented == nil && tt.unknown == nil && tt.duplicated == nil
-			if diff.empty() != wantEmpty {
-				t.Errorf("diff.empty() = %v, want %v", diff.empty(), wantEmpty)
-			}
 		})
 	}
 }
@@ -542,10 +619,6 @@ paths:
 			if !slices.Equal(diff.methodMismatches, tt.methodMismatches) {
 				t.Errorf("methodMismatches = %v, want %v", diff.methodMismatches, tt.methodMismatches)
 			}
-			wantEmpty := tt.undocumented == nil && tt.unregistered == nil && tt.methodMismatches == nil
-			if diff.empty() != wantEmpty {
-				t.Errorf("diff.empty() = %v, want %v", diff.empty(), wantEmpty)
-			}
 		})
 	}
 }
@@ -621,10 +694,6 @@ func dtoPropertyNames(t reflect.Type) []string {
 type schemaDiff struct {
 	undocumented []string // json field of the struct, absent from the schema
 	unknown      []string // schema property backed by no json field
-}
-
-func (d schemaDiff) empty() bool {
-	return len(d.undocumented) == 0 && len(d.unknown) == 0
 }
 
 // diffSchemaProperties compares the two name sets in both directions.
@@ -861,10 +930,6 @@ components:
 			}
 			if !slices.Equal(diff.unknown, tt.unknown) {
 				t.Errorf("unknown = %v, want %v", diff.unknown, tt.unknown)
-			}
-			wantEmpty := tt.undocumented == nil && tt.unknown == nil
-			if diff.empty() != wantEmpty {
-				t.Errorf("diff.empty() = %v, want %v", diff.empty(), wantEmpty)
 			}
 		})
 	}

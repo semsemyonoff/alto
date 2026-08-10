@@ -63,6 +63,19 @@ const (
 	JobStatusCanceled JobStatus = "canceled"
 )
 
+// allJobStatuses lists every status above, in lifecycle order. Same reason as
+// allAPIErrorCodes (handlers_api.go): Go cannot enumerate a const block at
+// runtime, and JobStatus is a published enum in the OpenAPI document —
+// TestOpenAPIDocumentsEveryJobStatus fails if the two drift apart, and
+// TestAllJobStatusesMatchConstants fails if this slice falls behind the block.
+var allJobStatuses = []JobStatus{
+	JobStatusQueued,
+	JobStatusRunning,
+	JobStatusDone,
+	JobStatusFailed,
+	JobStatusCanceled,
+}
+
 // jobState holds the mutable state for a single transcoding job.
 // All mutable fields (status, errMsg, latest, subs, and the fields below) are
 // guarded by jm.mu — jobState has no lock of its own.

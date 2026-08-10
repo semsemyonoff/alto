@@ -59,6 +59,15 @@ jobs:
           echo "version=$new" >> "$GITHUB_OUTPUT"
           echo "VERSION: $cur -> $new"
 
+          # The OpenAPI document carries the same number under info.version, and
+          # a test pins the two together — bumping one without the other breaks
+          # the suite on the release commit.
+          doc=web/static/openapi.yaml
+          grep -qE '^  version: [0-9]+\.[0-9]+\.[0-9]+$' "$doc" \
+            || { echo "ERROR: no 'info.version' line in $doc" >&2; exit 1; }
+          sed -i -E "0,/^  version: [0-9]+\.[0-9]+\.[0-9]+$/s//  version: $new/" "$doc"
+          echo "$doc info.version -> $new"
+
       - name: Promote Unreleased to the new version
         run: |
           set -euo pipefail

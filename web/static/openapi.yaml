@@ -1,14 +1,19 @@
 openapi: 3.1.0
 
-# This document is the contract for ALTO's HTTP API. It is hand-written, and
-# three tests in internal/server hold it to the code (see openapi_test.go):
-# every /api/* route in Server.routes() must appear here and vice versa, the
-# Error.code enum must equal allAPIErrorCodes, and every component schema below
-# must match its DTO's json tags. Editing a handler without editing this file
-# fails `make test`.
+# This document is the contract for ALTO's /api/* surface. It is hand-written,
+# and tests in internal/server hold it to the code (see openapi_test.go): every
+# /api/* route in Server.routes() must appear here and vice versa, the
+# Error.code enum must equal allAPIErrorCodes, the JobStatus enum must equal
+# allJobStatuses, every component schema below must match its DTO's json tags,
+# and info.version must equal the VERSION file. Editing a handler without
+# editing this file fails `make test`.
+#
+# Non-/api routes are out of scope by design: the page routes, the static
+# handlers, and GET /health (registered on the outer mux in cmd/alto/main.go).
 info:
   title: ALTO API
-  # The ALTO release this document was last checked against (see VERSION).
+  # The ALTO release this document describes. Pinned to VERSION by
+  # TestOpenAPIVersionMatchesRelease and bumped by the release-cut workflow.
   version: 0.1.0
   summary: Browse an indexed music library and transcode it with ffmpeg.
   description: |
@@ -1339,11 +1344,20 @@ components:
           type: string
           example: 9f1c2d3e4a5b6c7d
         status:
-          $ref: '#/components/schemas/JobStatus'
+          type: string
+          # Not a $ref to JobStatus: a `remove` frame is the zero-valued struct
+          # with `removed: true`, so it carries "" here. JobStatus stays strict
+          # for JobDetail and JobLog, which always describe a real job.
+          enum: ['', queued, running, done, failed, canceled]
+          description: |
+            The job's lifecycle state, as in `JobStatus`. Empty on a `remove`
+            frame, which carries only `id` and `removed`.
         pct:
           type: number
           format: double
-          description: Overall progress, 0–100. A `done` job always reports 100.
+          description: |
+            Overall progress, 0–100. A `done` job always reports 100; a `remove`
+            frame reports 0.
         title:
           type: string
           description: Library and directory, for display.
