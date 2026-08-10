@@ -2099,3 +2099,125 @@ func itoa(n int64) string {
 		}(),
 		""), "")
 }
+
+// --- route table ---
+
+// concreteURL turns a mux pattern into a request path: "/{$}" becomes "/" and
+// each "{name}" wildcard is filled with a placeholder segment. mux.Handler
+// matches on the path alone, so any non-empty segment works.
+func concreteURL(pattern string) string {
+	segments := strings.Split(pattern, "/")
+	for i, seg := range segments {
+		switch {
+		case seg == "{$}":
+			segments[i] = ""
+		case strings.HasPrefix(seg, "{") && strings.HasSuffix(seg, "}"):
+			segments[i] = "1"
+		}
+	}
+	return strings.Join(segments, "/")
+}
+
+// TestRoutesAreRegistered asserts that every entry in routes() reaches the mux
+// under its own pattern. Asserting a non-nil handler would be a tautology:
+// an unmatched request yields http.NotFoundHandler(), which is also non-nil —
+// so the registered pattern is what gets compared.
+//
+// The requests are built with concrete URLs ("/api/tree/1"), never the literal
+// pattern. mux.Handler does not populate PathValue, so nothing downstream of it
+// can read wildcards; this test only inspects routing.
+func TestRoutesAreRegistered(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+
+	for _, rt := range srv.routes() {
+		t.Run(rt.method+" "+rt.pattern, func(t *testing.T) {
+			req := httptest.NewRequest(rt.method, concreteURL(rt.pattern), nil)
+			_, pattern := srv.mux.Handler(req)
+
+			if want := rt.method + " " + rt.pattern; pattern != want {
+				t.Errorf("mux matched pattern %q, want %q", pattern, want)
+			}
+		})
+	}
+}
+
+// TestRoutesTableNoDuplicates guards the table itself: ServeMux.Handle panics on
+// a conflicting registration, which would take the whole package down before any
+// assertion runs, so the duplicate is caught here as data instead.
+func TestRoutesTableNoDuplicates(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+
+	seen := make(map[string]struct{})
+	for _, rt := range srv.routes() {
+		key := rt.method + " " + rt.pattern
+		if _, dup := seen[key]; dup {
+			t.Errorf("duplicate route in table: %s", key)
+		}
+		seen[key] = struct{}{}
+		if rt.handler == nil {
+			t.Errorf("route %s has a nil handler", key)
+		}
+	}
+}
+
+// TestRoutesUnchangedBehaviour hits one route of each pattern shape end to end,
+// proving the table refactor kept the wildcards wired to the handlers: a literal
+// path, a single wildcard, and a wildcard followed by a trailing segment.
+func TestRoutesUnchangedBehaviour(t *testing.T) {
+	srv, database, _ := newTestServer(t)
+
+	libs, err := database.GetLibraries()
+	if err != nil {
+		t.Fatalf("GetLibraries: %v", err)
+	}
+	if len(libs) != 1 {
+		t.Fatalf("want 1 library, got %d", len(libs))
+	}
+
+	tests := []struct {
+		name     string
+		method   string
+		url      string
+		wantCode int
+		// wantBody, when non-empty, must appear in the response body — it is what
+		// distinguishes "the handler ran" from "the router answered 404".
+		wantBody string
+	}{
+		{
+			name:     "literal",
+			method:   http.MethodGet,
+			url:      "/api/version",
+			wantCode: http.StatusOK,
+			wantBody: "version",
+		},
+		{
+			name:     "single wildcard",
+			method:   http.MethodGet,
+			url:      "/api/tree/" + itoa(libs[0].ID),
+			wantCode: http.StatusOK,
+			wantBody: "directories",
+		},
+		{
+			name:     "wildcard with trailing segment",
+			method:   http.MethodGet,
+			url:      "/api/transcode/no-such-job/log",
+			wantCode: http.StatusNotFound,
+			wantBody: codeJobNotFound,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(tt.method, tt.url, nil)
+			w := httptest.NewRecorder()
+			srv.ServeHTTP(w, req)
+
+			if w.Code != tt.wantCode {
+				t.Fatalf("want %d, got %d (body: %s)", tt.wantCode, w.Code, w.Body.String())
+			}
+			if tt.wantBody != "" && !strings.Contains(w.Body.String(), tt.wantBody) {
+				t.Errorf("body %q should contain %q", w.Body.String(), tt.wantBody)
+			}
+		})
+	}
+}

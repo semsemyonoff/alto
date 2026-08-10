@@ -330,36 +330,60 @@ func (s *Server) launchScan(libs []db.Library) {
 	}()
 }
 
+// route is one registered API route. Keeping the table as data lets the OpenAPI
+// drift test enumerate what the server actually serves — http.ServeMux cannot.
+type route struct {
+	method  string // "GET", "POST"
+	pattern string // "/api/tree/{libraryID}"
+	handler http.HandlerFunc
+}
+
+// routes returns every route registered through the table, in registration
+// order. The three registrations kept out of it are listed in registerRoutes.
+func (s *Server) routes() []route {
+	return []route{
+		{"GET", "/{$}", s.handleIndex},
+		{"GET", "/dir", s.handleDirPage},
+		{"GET", "/api/libraries", s.handleLibraries},
+		{"GET", "/api/tree/{libraryID}", s.handleTree},
+		{"GET", "/api/tree/{libraryID}/children", s.handleTreeChildren},
+		{"GET", "/api/tree/{libraryID}/search", s.handleTreeSearch},
+		{"GET", "/api/dir", s.handleDir},
+		{"POST", "/api/scan", s.handleScan},
+		{"GET", "/api/scan/status", s.handleScanStatus},
+		{"GET", "/api/scan/state", s.handleScanState},
+		{"POST", "/api/scan/dir", s.handleScanDir},
+		{"GET", "/api/cover", s.handleCover},
+		{"GET", "/api/jobs", s.handleJobs},
+		{"GET", "/api/jobs/events", s.handleJobEvents},
+		// More specific than the {id} wildcard below, so /api/jobs/events keeps
+		// routing to the SSE stream.
+		{"GET", "/api/jobs/{id}", s.handleJob},
+		{"POST", "/api/jobs/{id}/cancel", s.handleJobCancel},
+		{"POST", "/api/jobs/{id}/remove", s.handleJobRemove},
+		{"GET", "/api/version", s.handleVersion},
+		{"GET", "/api/presets", s.handlePresets},
+		{"POST", "/api/transcode", s.handleTranscodeStart},
+		{"GET", "/api/transcode/{jobID}/log", s.handleTranscodeLog},
+	}
+}
+
 func (s *Server) registerRoutes() {
-	s.mux.HandleFunc("GET /{$}", s.handleIndex)
-	s.mux.HandleFunc("GET /dir", s.handleDirPage)
-	s.mux.HandleFunc("GET /api/libraries", s.handleLibraries)
-	s.mux.HandleFunc("GET /api/tree/{libraryID}", s.handleTree)
-	s.mux.HandleFunc("GET /api/tree/{libraryID}/children", s.handleTreeChildren)
-	s.mux.HandleFunc("GET /api/tree/{libraryID}/search", s.handleTreeSearch)
-	s.mux.HandleFunc("GET /api/dir", s.handleDir)
-	s.mux.HandleFunc("POST /api/scan", s.handleScan)
-	s.mux.HandleFunc("GET /api/scan/status", s.handleScanStatus)
-	s.mux.HandleFunc("GET /api/scan/state", s.handleScanState)
-	s.mux.HandleFunc("POST /api/scan/dir", s.handleScanDir)
-	s.mux.HandleFunc("GET /api/cover", s.handleCover)
-	s.mux.HandleFunc("GET /api/jobs", s.handleJobs)
-	s.mux.HandleFunc("GET /api/jobs/events", s.handleJobEvents)
-	// More specific than the {id} wildcard below, so /api/jobs/events keeps
-	// routing to the SSE stream.
-	s.mux.HandleFunc("GET /api/jobs/{id}", s.handleJob)
-	s.mux.HandleFunc("POST /api/jobs/{id}/cancel", s.handleJobCancel)
-	s.mux.HandleFunc("POST /api/jobs/{id}/remove", s.handleJobRemove)
-	s.mux.HandleFunc("GET /api/version", s.handleVersion)
-	s.mux.HandleFunc("GET /api/presets", s.handlePresets)
-	s.mux.HandleFunc("POST /api/transcode", s.handleTranscodeStart)
-	s.mux.HandleFunc("GET /api/transcode/{jobID}/log", s.handleTranscodeLog)
+	for _, rt := range s.routes() {
+		s.mux.HandleFunc(rt.method+" "+rt.pattern, rt.handler)
+	}
+
+	// Deliberately outside the table, each for its own reason.
+
+	// A fallback, not an endpoint.
 	s.mux.HandleFunc("GET /{path...}", s.handleNotFoundPage)
 
+	// Not an /api/ route.
 	s.mux.Handle("GET /favicon.ico", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.ServeFile(w, r, filepath.Join(s.staticDir, "logo.svg"))
 	}))
 
+	// An http.Handler on a prefix pattern with no OpenAPI analogue.
 	// Static file serving supports GET and HEAD through the GET pattern.
 	s.mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.Dir(s.staticDir))))
 }
