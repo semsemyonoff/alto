@@ -10,9 +10,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/semsemyonoff/ALTO/internal/db"
 	"github.com/semsemyonoff/ALTO/internal/transcode"
@@ -47,6 +49,16 @@ type ScanConfig struct {
 	OutputDir string
 	// CacheDir is the directory for app-managed files (extracted cover art).
 	CacheDir string
+	// Workers caps the number of concurrent probes across all libraries.
+	// Values <= 0 mean DefaultScanWorkers().
+	Workers int
+}
+
+// DefaultScanWorkers returns the probe concurrency used when none is configured.
+// Probing is process-spawn bound, so a small multiple of the available cores is
+// enough to keep them busy without flooding the machine with ffprobe children.
+func DefaultScanWorkers() int {
+	return min(4, runtime.NumCPU())
 }
 
 // Scanner walks library directories, extracts metadata, and stores results in DB.
@@ -54,6 +66,9 @@ type Scanner struct {
 	db     *db.DB
 	prober Prober
 	cfg    ScanConfig
+	// sem bounds concurrent probes; it is shared by every library scanned by
+	// this Scanner, so ScanAll cannot multiply the configured worker count.
+	sem chan struct{}
 }
 
 // NewScanner constructs a Scanner with the given DB, prober, and config.
@@ -61,7 +76,15 @@ func NewScanner(database *db.DB, prober Prober, cfg ScanConfig) *Scanner {
 	if prober == nil {
 		prober = &FFProber{}
 	}
-	return &Scanner{db: database, prober: prober, cfg: cfg}
+	if cfg.Workers <= 0 {
+		cfg.Workers = DefaultScanWorkers()
+	}
+	return &Scanner{
+		db:     database,
+		prober: prober,
+		cfg:    cfg,
+		sem:    make(chan struct{}, cfg.Workers),
+	}
 }
 
 // ScanAll scans all provided libraries in parallel. If progress is non-nil, it is
@@ -228,8 +251,25 @@ func (s *Scanner) scan(ctx context.Context, lib db.Library, progress func(discov
 		info := dirInfos[rel]
 		audioFiles := dirToFiles[rel]
 
-		coverPath, hasCover := s.resolveCover(ctx, info.absPath, audioFiles, lib.ID, rel)
-		tracks := s.probeFiles(ctx, info.absPath, audioFiles)
+		// Stored rows of this directory, keyed by filename: probeFiles reuses the
+		// ones whose (size, mtime) still match on disk instead of re-probing.
+		cached, cacheErr := s.db.GetTracksByDirPath(lib.ID, rel)
+		if cacheErr != nil {
+			slog.Warn("read cached tracks", "dir", rel, "err", cacheErr)
+			cached = nil
+		}
+
+		// Probe before resolving the cover: resolveCover reads the embedded-art
+		// flag off an already-probed track instead of probing the first file again.
+		tracks, allCached := s.probeFiles(ctx, info.absPath, audioFiles, cached)
+
+		// A cancellation during probing leaves tracks incomplete — writing it
+		// would replace an already-indexed directory with zeroed metadata.
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
+		coverPath, hasCover := s.resolveCover(ctx, info.absPath, tracks, lib.ID, rel)
 		codecSummary := buildCodecSummary(tracks)
 
 		dirID, upsertErr := s.db.UpsertDirectoryWithAudioFlag(lib.ID, rel, codecSummary, hasCover, coverPath, true)
@@ -238,10 +278,15 @@ func (s *Scanner) scan(ctx context.Context, lib db.Library, progress func(discov
 			continue
 		}
 
-		for _, t := range tracks {
-			t.DirectoryID = dirID
-			if upsertErr := s.db.UpsertTrack(t); upsertErr != nil {
-				slog.Warn("upsert track", "file", t.Filename, "err", upsertErr)
+		// When every file was a cache hit and the on-disk name set is the stored
+		// one, the rows to write are identical to the rows already there. Skipping
+		// that transaction is what makes a warm rescan cheap; the directory row and
+		// the stale-file cleanup still run unconditionally, being one statement each.
+		if !allCached || !tracksMatchCache(tracks, cached) {
+			// One transaction per directory: a failure rolls back this directory's
+			// tracks, so warn once and move on rather than aborting the scan.
+			if writeErr := s.db.UpsertTracks(dirID, tracks); writeErr != nil {
+				slog.Warn("upsert tracks", "dir", rel, "tracks", len(tracks), "err", writeErr)
 			}
 		}
 
@@ -303,8 +348,9 @@ func containsAltoSegment(path, libRoot string) bool {
 }
 
 // resolveCover returns the cover art path and whether cover art was found.
-// It checks external files first; if none, it tries embedded art extraction.
-func (s *Scanner) resolveCover(ctx context.Context, dirPath string, audioFiles []string, libID int64, relPath string) (string, bool) {
+// It checks external files first; if none, it tries embedded art extraction,
+// using the already-probed tracks rather than probing again.
+func (s *Scanner) resolveCover(ctx context.Context, dirPath string, tracks []db.Track, libID int64, relPath string) (string, bool) {
 	// Check for external cover art files. Use Lstat to reject symlinks — following
 	// symlinks here would allow a crafted cover.jpg -> /etc/passwd to be indexed
 	// and later served through /api/cover.
@@ -315,15 +361,14 @@ func (s *Scanner) resolveCover(ctx context.Context, dirPath string, audioFiles [
 		}
 	}
 
-	// Fall back to embedded art extraction.
-	if len(audioFiles) == 0 {
+	// Fall back to embedded art extraction. Guard on tracks, not on the walk's
+	// audio file list: probeFiles drops files it cannot stat, so a directory with
+	// audio files can still yield no tracks and the two do not correspond
+	// index-for-index.
+	if len(tracks) == 0 || !tracks[0].HasEmbeddedCover {
 		return "", false
 	}
-	src := filepath.Join(dirPath, audioFiles[0])
-	info, err := s.prober.Probe(ctx, src)
-	if err != nil || !info.HasCover {
-		return "", false
-	}
+	src := filepath.Join(dirPath, tracks[0].Filename)
 
 	// Extract embedded cover art to cache.
 	cacheDir := s.cfg.CacheDir
@@ -358,35 +403,116 @@ func (s *Scanner) resolveCover(ctx context.Context, dirPath string, audioFiles [
 	return cacheFile, true
 }
 
-// probeFiles runs ffprobe on each audio file and returns Track records.
-func (s *Scanner) probeFiles(ctx context.Context, dirPath string, audioFiles []string) []db.Track {
-	tracks := make([]db.Track, 0, len(audioFiles))
-	for _, name := range audioFiles {
-		fullPath := filepath.Join(dirPath, name)
-		fi, err := os.Stat(fullPath)
-		if err != nil {
-			slog.Warn("stat audio file", "path", fullPath, "err", err)
-			continue
+// probeFiles returns a Track record per audio file, running ffprobe only on the
+// files whose size and mtime differ from the cached row of the same name. Files
+// are handled concurrently, bounded by the scanner-wide worker semaphore, but
+// the returned tracks keep the order of audioFiles. The second return value
+// reports whether every returned track came from the cache, i.e. whether no file
+// was probed.
+func (s *Scanner) probeFiles(ctx context.Context, dirPath string, audioFiles []string, cached map[string]db.Track) ([]db.Track, bool) {
+	// Index-addressed so probe completion order cannot reorder the directory;
+	// a nil entry is a file with no row to write (vanished, or scan canceled).
+	results := make([]*db.Track, len(audioFiles))
+	var probed atomic.Bool
+	var wg sync.WaitGroup
+
+	// The token is taken before the goroutine is started, so a directory with
+	// thousands of files does not park thousands of goroutines on the semaphore.
+launch:
+	for i, name := range audioFiles {
+		select {
+		case s.sem <- struct{}{}:
+		case <-ctx.Done():
+			break launch
 		}
 
-		t := db.Track{
-			Filename: name,
-			Size:     fi.Size(),
-		}
+		wg.Go(func() {
+			defer func() { <-s.sem }()
 
-		info, probeErr := s.prober.Probe(ctx, fullPath)
-		if probeErr != nil {
-			slog.Warn("ffprobe", "file", fullPath, "err", probeErr)
-		} else {
-			t.Codec = info.Codec
-			t.Bitrate = info.Bitrate
-			t.Duration = info.Duration
-			t.SampleRate = info.SampleRate
-			t.Channels = info.Channels
-		}
-		tracks = append(tracks, t)
+			t, hit, ok := s.probeFile(ctx, dirPath, name, cached)
+			if !ok {
+				return
+			}
+			if !hit {
+				probed.Store(true)
+			}
+			results[i] = &t
+		})
 	}
-	return tracks
+	wg.Wait()
+
+	tracks := make([]db.Track, 0, len(audioFiles))
+	for _, t := range results {
+		if t != nil {
+			tracks = append(tracks, *t)
+		}
+	}
+	return tracks, !probed.Load()
+}
+
+// probeFile builds the Track record of a single audio file, reusing the cached
+// row when the file still matches it. hit reports a cache hit (no process
+// spawned); ok is false when the file cannot be stat'd and therefore has no row.
+func (s *Scanner) probeFile(ctx context.Context, dirPath, name string, cached map[string]db.Track) (track db.Track, hit bool, ok bool) {
+	fullPath := filepath.Join(dirPath, name)
+	before, err := os.Stat(fullPath)
+	if err != nil {
+		slog.Warn("stat audio file", "path", fullPath, "err", err)
+		return db.Track{}, false, false
+	}
+
+	// MTime 0 marks a row whose metadata could not be trusted (migrated, failed
+	// probe, or a file that changed mid-scan) and never counts as a hit.
+	if prev, cachedOK := cached[name]; cachedOK && prev.MTime != 0 &&
+		prev.Size == before.Size() && prev.MTime == before.ModTime().UnixNano() {
+		return prev, true, true
+	}
+
+	t := db.Track{
+		Filename: name,
+		Size:     before.Size(),
+		MTime:    before.ModTime().UnixNano(),
+	}
+
+	info, probeErr := s.prober.Probe(ctx, fullPath)
+	if probeErr != nil {
+		slog.Warn("ffprobe", "file", fullPath, "err", probeErr)
+		t.MTime = 0
+		return t, false, true
+	}
+
+	t.Codec = info.Codec
+	t.Bitrate = info.Bitrate
+	t.Duration = info.Duration
+	t.SampleRate = info.SampleRate
+	t.Channels = info.Channels
+	t.HasEmbeddedCover = info.HasCover
+
+	// The file may have been rewritten while ffprobe ran; pinning the new
+	// (size, mtime) against the old file's metadata would cache it forever.
+	after, statErr := os.Stat(fullPath)
+	if statErr != nil || after.Size() != before.Size() || !after.ModTime().Equal(before.ModTime()) {
+		t.MTime = 0
+	} else {
+		t.Size = after.Size()
+		t.MTime = after.ModTime().UnixNano()
+	}
+	return t, false, true
+}
+
+// tracksMatchCache reports whether tracks is exactly the set of stored rows in
+// cached, by filename. Paired with an all-cache-hit probe pass it means writing
+// tracks back would store the same values that are already there.
+func tracksMatchCache(tracks []db.Track, cached map[string]db.Track) bool {
+	if len(tracks) != len(cached) {
+		return false
+	}
+	for _, t := range tracks {
+		if _, ok := cached[t.Filename]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // buildCodecSummary returns a human-readable codec summary for a directory.

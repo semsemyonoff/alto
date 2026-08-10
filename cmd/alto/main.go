@@ -22,12 +22,14 @@ import (
 
 // Config holds all runtime configuration parsed from environment variables.
 type Config struct {
-	Libraries []Library
-	Port      string
-	OutputDir string
-	DBPath    string
-	CacheDir  string
-	Workers   int
+	Libraries   []Library
+	Port        string
+	OutputDir   string
+	DBPath      string
+	CacheDir    string
+	Workers     int
+	ScanWorkers int
+	ScanOnStart bool
 }
 
 // Library represents a named, mounted music library.
@@ -62,6 +64,23 @@ func ParseConfig() (*Config, error) {
 		workers = 1
 	}
 	cfg.Workers = workers
+
+	// 0 means "let the scanner pick its own default"; negatives are clamped to
+	// that same 0 rather than to 1, since the default is computed, not constant.
+	scanWorkers, err := getEnvIntDefault("ALTO_SCAN_WORKERS", 0)
+	if err != nil {
+		return nil, err
+	}
+	if scanWorkers < 0 {
+		scanWorkers = 0
+	}
+	cfg.ScanWorkers = scanWorkers
+
+	scanOnStart, err := getEnvBoolDefault("ALTO_SCAN_ON_START", true)
+	if err != nil {
+		return nil, err
+	}
+	cfg.ScanOnStart = scanOnStart
 
 	return cfg, nil
 }
@@ -139,6 +158,29 @@ func getEnvIntDefault(key string, def int) (int, error) {
 	return n, nil
 }
 
+// effectiveScanWorkers resolves a configured scan worker count to the value the
+// scanner will actually use, so the startup log matches the running pool.
+func effectiveScanWorkers(n int) int {
+	if n <= 0 {
+		return library.DefaultScanWorkers()
+	}
+	return n
+}
+
+// getEnvBoolDefault reads a boolean env var, returning def if unset.
+// Returns an error if the value is set but not a valid boolean.
+func getEnvBoolDefault(key string, def bool) (bool, error) {
+	v := os.Getenv(key)
+	if v == "" {
+		return def, nil
+	}
+	b, err := strconv.ParseBool(strings.TrimSpace(v))
+	if err != nil {
+		return false, fmt.Errorf("invalid %s %q: must be a boolean (1/0, true/false)", key, v)
+	}
+	return b, nil
+}
+
 func main() {
 	cfg, err := ParseConfig()
 	if err != nil {
@@ -185,7 +227,9 @@ func main() {
 	scanner := library.NewScanner(database, nil, library.ScanConfig{
 		OutputDir: cfg.OutputDir,
 		CacheDir:  cfg.CacheDir,
+		Workers:   cfg.ScanWorkers,
 	})
+	slog.Info("scan worker pool", "workers", effectiveScanWorkers(cfg.ScanWorkers))
 	engine := transcode.NewEngine()
 
 	// Detect the ffmpeg version once at startup (ffmpeg is ALTO's core tool) so
@@ -217,7 +261,14 @@ func main() {
 	mux.Handle("/", srv)
 
 	// Kick off an initial background scan so the UI is populated on first start.
-	srv.RunInitialScan()
+	// Disabled via ALTO_SCAN_ON_START=false for large libraries where a full
+	// re-index on every restart is too expensive; the UI's re-index button and
+	// POST /api/scan still work.
+	if cfg.ScanOnStart {
+		srv.RunInitialScan()
+	} else {
+		slog.Info("initial scan skipped", "reason", "ALTO_SCAN_ON_START=false")
+	}
 
 	addr := ":" + cfg.Port
 	slog.Info("starting ALTO", "addr", addr, "libraries", len(cfg.Libraries))

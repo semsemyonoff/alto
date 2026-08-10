@@ -23,6 +23,7 @@ Typical reasons people run ALTO:
 
 - Directory-tree browser over any number of mounted libraries, with a library switcher showing per-library track counts and index status.
 - Every audio file is probed with `ffprobe` and indexed into SQLite: codec, bitrate, duration, sample rate, channels — visible per track without opening a player.
+- Re-indexing is incremental: a file is re-probed only when its size or modification time changed, so a rescan of an unchanged library is a directory walk rather than a full `ffprobe` pass over the collection.
 - Cover art is shown for each directory, both from external files (`cover.jpg` and friends) and extracted from embedded tags.
 - Server-side search jumps straight to a directory by name instead of clicking down the tree.
 
@@ -76,6 +77,8 @@ All configuration is via environment variables.
 | `ALTO_DB_PATH` | `./alto.db` | SQLite database file path |
 | `ALTO_CACHE_DIR` | `./cache` | App-managed cache for extracted cover art — keep separate from library mounts |
 | `ALTO_TRANSCODE_WORKERS` | `1` | Number of concurrent transcode jobs; additional jobs sit `queued` until a worker is free |
+| `ALTO_SCAN_ON_START` | `true` | Re-index libraries at startup. Scanning is incremental, so a restart normally only walks and `stat`s the tree; set to `false` to skip even that — on very large or slow mounts, or to keep the one full re-probe after an upgrade out of boot. The UI's re-index button and `POST /api/scan` are unaffected. Accepts `true`/`false` or `1`/`0`; any other value is a fatal startup error |
+| `ALTO_SCAN_WORKERS` | `0` (auto) | Maximum concurrent `ffprobe` processes during a scan, across all libraries. `0` picks the built-in default, `min(4, NumCPU)` |
 
 ## Running It
 
@@ -107,6 +110,10 @@ Bump `ALTO_TAG` in `.env`, then:
 ```sh
 make pull && make up
 ```
+
+The SQLite schema migrates in place — no action needed. The first scan after an
+upgrade that adds the incremental-scan cache re-probes the whole library once
+(the cache starts empty); later re-indexes are near-instant.
 
 ## Transcoding Presets
 

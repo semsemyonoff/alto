@@ -24,7 +24,7 @@ ALTO_PLATFORMS ?= linux/amd64,linux/arm64
 
 export ALTO_IMAGE ALTO_TAG ALTO_PLATFORMS
 
-.PHONY: help build test lint run docker-build image-build frontend-build dev \
+.PHONY: help build test test-race lint run docker-build image-build frontend-build dev \
         up down restart pull logs ps release release-local
 
 help: ## Show this help
@@ -41,6 +41,9 @@ build: frontend-build ## Build the alto binary (frontend included)
 
 test: ## Run the Go test suite
 	go test ./...
+
+test-race: ## Run the Go test suite under the race detector (needs cgo)
+	CGO_ENABLED=1 go test -race ./...
 
 lint: ## Run golangci-lint
 	golangci-lint run
