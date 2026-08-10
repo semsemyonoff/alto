@@ -1,10 +1,12 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -738,6 +740,135 @@ func TestBuildDirPageData_LossyTracksCannotTranscode(t *testing.T) {
 
 	if data.CanTranscode {
 		t.Error("CanTranscode should be false for lossy tracks")
+	}
+}
+
+// TestBuildDirPageData_LosslessBreakdown pins the per-track lossless data the
+// selection UI is built on. CanTranscode is deliberately left all-or-nothing here —
+// it is loosened in the same change that teaches the dock to send skip_lossy.
+func TestBuildDirPageData_LosslessBreakdown(t *testing.T) {
+	lib := LibraryConfig{ID: 1, Name: "Music", Path: "/music"}
+	dir := &db.Directory{ID: 5, LibraryID: 1, Path: "Album"}
+
+	tests := []struct {
+		name             string
+		tracks           []db.Track
+		wantLossless     []bool
+		wantCount        int
+		wantHasLossy     bool
+		wantCanTranscode bool
+	}{
+		{
+			name: "all lossless",
+			tracks: []db.Track{
+				{Filename: "01.flac", Codec: "flac"},
+				{Filename: "02.ape", Codec: "APE"},
+				{Filename: "03.wav", Codec: "pcm_s16le"},
+			},
+			wantLossless:     []bool{true, true, true},
+			wantCount:        3,
+			wantHasLossy:     false,
+			wantCanTranscode: true,
+		},
+		{
+			name: "mixed",
+			tracks: []db.Track{
+				{Filename: "01.flac", Codec: "flac"},
+				{Filename: "02.mp3", Codec: "mp3"},
+				{Filename: "03.flac", Codec: "flac"},
+			},
+			wantLossless:     []bool{true, false, true},
+			wantCount:        2,
+			wantHasLossy:     true,
+			wantCanTranscode: false,
+		},
+		{
+			name: "all lossy",
+			tracks: []db.Track{
+				{Filename: "01.mp3", Codec: "mp3"},
+				{Filename: "02.opus", Codec: "opus"},
+			},
+			wantLossless:     []bool{false, false},
+			wantCount:        0,
+			wantHasLossy:     true,
+			wantCanTranscode: false,
+		},
+		{
+			name:             "no tracks",
+			tracks:           nil,
+			wantLossless:     nil,
+			wantCount:        0,
+			wantHasLossy:     false,
+			wantCanTranscode: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			data := buildDirPageData(lib, dir, tc.tracks, "/music/Album")
+
+			if len(data.Tracks) != len(tc.wantLossless) {
+				t.Fatalf("want %d rows, got %d", len(tc.wantLossless), len(data.Tracks))
+			}
+			for i, want := range tc.wantLossless {
+				if data.Tracks[i].Lossless != want {
+					t.Errorf("row %d (%s): Lossless = %v, want %v", i, data.Tracks[i].Filename, data.Tracks[i].Lossless, want)
+				}
+			}
+			if data.LosslessCount != tc.wantCount {
+				t.Errorf("LosslessCount = %d, want %d", data.LosslessCount, tc.wantCount)
+			}
+			if data.HasLossy != tc.wantHasLossy {
+				t.Errorf("HasLossy = %v, want %v", data.HasLossy, tc.wantHasLossy)
+			}
+			if data.CanTranscode != tc.wantCanTranscode {
+				t.Errorf("CanTranscode = %v, want %v", data.CanTranscode, tc.wantCanTranscode)
+			}
+		})
+	}
+}
+
+// TestBuildDirTracksJSON verifies the payload the tc-tracks-data tag carries, and
+// that a filename able to close the script element is escaped away by json.Marshal.
+func TestBuildDirTracksJSON(t *testing.T) {
+	data := buildDirPageData(
+		LibraryConfig{ID: 1, Name: "Music", Path: "/music"},
+		&db.Directory{ID: 5, LibraryID: 1, Path: "Album"},
+		[]db.Track{
+			{Filename: "01 A.flac", Codec: "flac"},
+			{Filename: "02 </script>.mp3", Codec: "mp3"},
+		},
+		"/music/Album",
+	)
+
+	raw := string(data.TracksJSON)
+	if strings.Contains(raw, "</script>") {
+		t.Errorf("tracks JSON must not contain a literal </script>: %s", raw)
+	}
+
+	var got []dirTrackDTO
+	if err := json.Unmarshal([]byte(raw), &got); err != nil {
+		t.Fatalf("unmarshal tracks JSON: %v (%s)", err, raw)
+	}
+	want := []dirTrackDTO{
+		{Name: "01 A.flac", Codec: "flac", Lossless: true},
+		{Name: "02 </script>.mp3", Codec: "mp3", Lossless: false},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("tracks JSON = %+v, want %+v", got, want)
+	}
+}
+
+func TestBuildDirTracksJSON_NoTracksIsEmptyArray(t *testing.T) {
+	data := buildDirPageData(
+		LibraryConfig{ID: 1, Name: "Music", Path: "/music"},
+		&db.Directory{ID: 5, LibraryID: 1, Path: "Empty"},
+		nil,
+		"/music/Empty",
+	)
+
+	if string(data.TracksJSON) != "[]" {
+		t.Errorf("TracksJSON want %q, got %q", "[]", string(data.TracksJSON))
 	}
 }
 

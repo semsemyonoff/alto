@@ -1,9 +1,11 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -199,6 +201,58 @@ func TestTranscodeDock_DisabledForLossyTracks(t *testing.T) {
 	}
 	if !strings.Contains(body, `data-can-transcode="false"`) {
 		t.Error("expect data-can-transcode=false for a lossy directory")
+	}
+}
+
+// TestDirPage_TracksDataPayload verifies the rendered page carries a well-formed
+// tc-tracks-data payload — the inline JSON the selection island initialises from.
+func TestDirPage_TracksDataPayload(t *testing.T) {
+	srv, database, libDir := newTestServerWithRealTemplates(t)
+	libID := srv.cfg.Libraries[0].ID
+
+	absPath := filepath.Join(libDir, "Mixed")
+	mkdirAll(t, absPath)
+	dirID, err := database.UpsertDirectory(libID, "Mixed", "FLAC, MP3", false, "")
+	if err != nil {
+		t.Fatalf("UpsertDirectory: %v", err)
+	}
+	for _, tr := range []db.Track{
+		{DirectoryID: dirID, Filename: "01 A.flac", Codec: "flac", Bitrate: 900_000, Duration: 200.0, SampleRate: 44100, Channels: 2, Size: 22_500_000},
+		{DirectoryID: dirID, Filename: "02 B.mp3", Codec: "mp3", Bitrate: 320_000, Duration: 180.0, SampleRate: 44100, Channels: 2, Size: 7_200_000},
+	} {
+		if err := database.UpsertTrack(tr); err != nil {
+			t.Fatalf("UpsertTrack: %v", err)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, apiURL("/dir", map[string]string{"path": absPath}), nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+
+	_, rest, ok := strings.Cut(body, `<script type="application/json" id="tc-tracks-data">`)
+	if !ok {
+		t.Fatal("expect the tracks JSON script tag (id=tc-tracks-data)")
+	}
+	payload, _, ok := strings.Cut(rest, "</script>")
+	if !ok {
+		t.Fatal("tracks JSON script tag is not closed")
+	}
+
+	var got []dirTrackDTO
+	if err := json.Unmarshal([]byte(payload), &got); err != nil {
+		t.Fatalf("tc-tracks-data is not valid JSON: %v (%s)", err, payload)
+	}
+	want := []dirTrackDTO{
+		{Name: "01 A.flac", Codec: "flac", Lossless: true},
+		{Name: "02 B.mp3", Codec: "mp3", Lossless: false},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("tc-tracks-data = %+v, want %+v", got, want)
 	}
 }
 

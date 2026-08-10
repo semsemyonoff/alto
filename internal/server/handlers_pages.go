@@ -351,6 +351,7 @@ type trackRow struct {
 	SampleRate string
 	Channels   int64
 	Size       string
+	Lossless   bool
 }
 
 // appShellData is the shared shell state for pages rendered inside the main app layout.
@@ -379,10 +380,13 @@ type dirPageData struct {
 	CodecClass    string
 	CanTranscode  bool
 	TrackCount    int
+	LosslessCount int  // tracks eligible for transcoding
+	HasLossy      bool // at least one track is lossy, i.e. this is a mixed or all-lossy directory
 	TotalDuration string
 	TotalSize     string
 	Tracks        []trackRow
 	PresetsJSON   template.JS // transcode.DefaultPresets() grouped by codec, for the dock's Alpine component
+	TracksJSON    template.JS // per-track {name, codec, lossless}, for the selection Alpine store
 }
 
 // dockPresetDTO is one transcode preset as shaped for the dock's Alpine component.
@@ -412,6 +416,30 @@ func buildDockPresetsJSON() template.JS {
 		return "{}"
 	}
 	return template.JS(b) //nolint:gosec // b is generated from static built-in presets, not user input
+}
+
+// dirTrackDTO is one track as shaped for the directory page's selection island.
+type dirTrackDTO struct {
+	Name     string `json:"name"`
+	Codec    string `json:"codec"`
+	Lossless bool   `json:"lossless"`
+}
+
+// buildDirTracksJSON serialises the track rows for the page's inline
+// tc-tracks-data tag, mirroring buildDockPresetsJSON. Filenames are
+// user-controlled, but encoding/json escapes <, > and & as \uXXXX, so the payload
+// cannot close the surrounding script element.
+func buildDirTracksJSON(rows []trackRow) template.JS {
+	tracks := make([]dirTrackDTO, len(rows))
+	for i, r := range rows {
+		tracks[i] = dirTrackDTO{Name: r.Filename, Codec: r.Codec, Lossless: r.Lossless}
+	}
+	b, err := json.Marshal(tracks)
+	if err != nil {
+		slog.Error("buildDirTracksJSON: marshal", "err", err)
+		return "[]"
+	}
+	return template.JS(b) //nolint:gosec // json.Marshal escapes <, > and & — the payload cannot break out of the script tag
 }
 
 func isLosslessCodec(codec string) bool {
@@ -569,7 +597,9 @@ func buildDirPageData(lib LibraryConfig, dir *db.Directory, tracks []db.Track, r
 	rows := make([]trackRow, len(tracks))
 	var totalDuration float64
 	var totalSize int64
+	var losslessCount int
 	for i, t := range tracks {
+		lossless := isLosslessCodec(t.Codec)
 		rows[i] = trackRow{
 			Index:      i + 1,
 			Filename:   t.Filename,
@@ -579,6 +609,10 @@ func buildDirPageData(lib LibraryConfig, dir *db.Directory, tracks []db.Track, r
 			SampleRate: fmtSampleRate(t.SampleRate),
 			Channels:   t.Channels,
 			Size:       fmtSize(t.Size),
+			Lossless:   lossless,
+		}
+		if lossless {
+			losslessCount++
 		}
 		totalDuration += t.Duration
 		totalSize += t.Size
@@ -594,10 +628,13 @@ func buildDirPageData(lib LibraryConfig, dir *db.Directory, tracks []db.Track, r
 		CodecClass:    codecClass(dir.CodecSummary),
 		CanTranscode:  canTranscodeTracks(tracks),
 		TrackCount:    len(tracks),
+		LosslessCount: losslessCount,
+		HasLossy:      losslessCount < len(tracks),
 		TotalDuration: fmtDuration(totalDuration),
 		TotalSize:     fmtSize(totalSize),
 		Tracks:        rows,
 		PresetsJSON:   buildDockPresetsJSON(),
+		TracksJSON:    buildDirTracksJSON(rows),
 	}
 }
 
