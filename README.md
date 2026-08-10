@@ -34,6 +34,7 @@ Typical reasons people run ALTO:
 - **Custom mode** for when you do: set bitrate or compression level directly, toggle metadata and cover-art copying, or pass raw ffmpeg arguments.
 - **Three output modes** — write to a shared output directory, drop an `.alto-out/` folder next to the source, or replace the originals in place with rollback. See [Output Modes](#output-modes).
 - **A job queue** with a configurable number of parallel workers (`ALTO_TRANSCODE_WORKERS`). Queue a dozen albums and walk away; jobs beyond capacity wait their turn, and the queue panel — visible on every screen — lets you watch or cancel any of them.
+- **Mixed albums**, where lossless and lossy tracks sit in one directory, are handled per track: tick *Skip lossy* (or pick tracks by hand) and ALTO transcodes the lossless ones and leaves the rest alone. Optionally the skipped files are copied verbatim into the output, so what lands there is still a complete album. See [Mixed Directories](#mixed-directories).
 - **Live progress**, streamed over SSE for both transcoding and library re-indexing. No page refreshing to find out where it's at.
 
 ### Deployment
@@ -153,3 +154,146 @@ Select "Custom" in the preset dropdown to configure manually:
 | Shared /out (default) | Mirrors library path structure under `<ALTO_OUTPUT_DIR>/<library-name>/<relative-path>/`. Non-audio files copied alongside. |
 | Local out | Creates `.alto-out/` subdirectory inside the source audio directory. |
 | Replace | Atomic per-file in-place replacement with rollback. Backup created on same filesystem; restored automatically on failure. Requires confirmation. |
+
+## Mixed Directories
+
+By default ALTO refuses a directory that is not entirely lossless. That is
+deliberate: transcoding an MP3 to Opus would produce a second generation of lossy
+encoding, quietly worse than what you started with.
+
+A *mixed album* — a release padded with singles, a compilation, a session partly
+re-released later — is handled per track instead. Open such a directory and the
+transcode panel offers:
+
+- **Skip lossy (N)** — transcode every lossless track and leave the lossy ones
+  untouched. It is pre-selected for a mixed directory, so a mixed album is still a
+  one-click START.
+- **Per-track checkboxes** — pick an explicit subset. Lossy rows are marked and
+  their checkbox is disabled; they can never be selected as a source.
+- **Copy skipped to output** — copy the skipped files byte-for-byte into the
+  output directory, so what lands there is a complete album rather than one with
+  holes in the tracklist. Not available in Replace mode, where the originals are
+  already in place.
+
+The source files are never modified by any of this: skipped tracks are read at
+most, and only when you asked for them to be copied.
+
+## HTTP API
+
+Everything the UI does is available as JSON over HTTP — enough to drive ALTO from
+a script or a download-automation pipeline. Errors carry a stable machine-readable
+code, so a client never has to match on message text.
+
+### Endpoints
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /api/libraries` | Configured libraries with track counts and index status |
+| `GET /api/tree/{libraryID}` | Directory tree for a library |
+| `GET /api/dir?path=` | One directory plus its indexed tracks |
+| `GET /api/cover?path=` | Cover art for a directory |
+| `GET /api/presets` | Every built-in preset and the codecs they target |
+| `POST /api/transcode` | Start a job — see below |
+| `GET /api/jobs` | Queue listing (queue order) |
+| `GET /api/jobs/{id}` | Full detail for one job, including failure reason and output directory |
+| `GET /api/jobs/events` | SSE stream of job updates |
+| `POST /api/jobs/{id}/cancel` | Cancel a queued or running job |
+| `POST /api/jobs/{id}/remove` | Drop a terminal job from the queue listing |
+| `GET /api/transcode/{jobID}/log` | Per-job ffmpeg log |
+| `POST /api/scan` | Start a full re-index of every library (asynchronous) |
+| `GET /api/scan/state` | `{running, started_at}` for the full scan |
+| `GET /api/scan/status` | SSE stream of full-scan progress |
+| `POST /api/scan/dir?path=` | Index exactly one directory, synchronously |
+| `GET /api/version` | Build version |
+
+### Starting a job
+
+```jsonc
+POST /api/transcode
+{
+  "path": "/music/Some Artist/Some Album",
+  "codec": "opus",                // "flac" or "opus"
+  "preset": "Music High",
+  "output_mode": "shared",        // "shared", "local", "replace"
+
+  "skip_lossy": true,             // optional — transcode the lossless tracks only
+  "files": ["01 A.flac"],         // optional — an explicit selection
+  "copy_skipped": false           // optional — copy unselected audio verbatim
+}
+```
+
+`skip_lossy` and `files` are two ways to say the same thing and are mutually
+exclusive; sending both, or an empty `files: []`, is a `400 invalid_request`.
+`files` accepts lossless names only — it narrows a job, it never widens it — and
+every name must be a bare filename present in the directory index.
+
+With neither field, behaviour is exactly what it always was: an all-lossless
+directory transcodes in full, and a mixed one is refused with
+`422 mixed_directory`.
+
+| input | directory | result |
+|---|---|---|
+| neither | all lossless | transcodes everything |
+| neither | mixed | `422 mixed_directory` |
+| `skip_lossy` | mixed | transcodes the lossless tracks only |
+| `skip_lossy` | all lossy | `422 no_lossless_tracks` |
+| `files` | any | transcodes exactly the listed names |
+
+A successful call answers `202` naming both halves of the resolved selection, so
+a client learns what was scheduled and what was left alone without a second
+request:
+
+```jsonc
+202 {
+  "job_id": "a1b2c3d4",
+  "files":   ["01 A.flac", "02 B.flac"],
+  "skipped": [{"name": "03 C.mp3", "codec": "mp3", "reason": "lossy"}]
+}
+```
+
+`reason` is `lossy` (dropped by `skip_lossy`) or `not_selected` (absent from
+`files`). Poll `GET /api/jobs/{id}` for the outcome; a terminal job stays
+answerable there long after it leaves the queue listing.
+
+### Errors
+
+Every JSON endpoint answers a failure with the same envelope, optionally carrying
+context:
+
+```jsonc
+422 {
+  "error": "file is not a lossless source: 03 C.mp3",
+  "code": "lossy_source_selected",
+  "lossy": ["03 C.mp3"]
+}
+```
+
+Codes: `invalid_request`, `path_forbidden`, `path_not_found`,
+`library_not_found`, `not_indexed`, `no_tracks`, `mixed_directory`,
+`no_lossless_tracks`, `unknown_file`, `lossy_source_selected`,
+`output_dir_not_configured`, `output_name_conflict`,
+`copy_skipped_not_applicable`, `engine_unavailable`, `job_already_running`,
+`job_already_finished`, `job_not_found`, `scan_running`, `no_cover`,
+`internal_error`.
+
+`path_not_found` and `not_indexed` are deliberately distinct: the first means the
+path is absent from the filesystem (a typo — rescanning will not help), the
+second that it exists but ALTO has not indexed it yet.
+
+### Transcoding a fresh download
+
+That distinction is what makes the two-call flow work on a directory ALTO has
+never seen — no full re-index, no event stream to parse:
+
+```sh
+curl -X POST 'http://localhost:8080/api/scan/dir?path=/music/New%20Album'
+curl -X POST http://localhost:8080/api/transcode \
+  -H 'Content-Type: application/json' \
+  -d '{"path":"/music/New Album","codec":"opus","preset":"Music High",
+       "output_mode":"shared","skip_lossy":true,"copy_skipped":true}'
+```
+
+`POST /api/scan/dir` indexes one directory synchronously and returns it with its
+tracks. It is mutually exclusive with a full scan in both directions: it answers
+`409 scan_running` while one is in flight, and `POST /api/scan` is refused while a
+single-directory index is running.
