@@ -30,9 +30,18 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
     -o /alto ./cmd/alto
 
 # Stage 3: Runtime
-FROM alpine:3.21
+FROM alpine:3.24
 
-RUN apk add --no-cache ffmpeg
+# ffmpeg is the encoder, so it is pinned exactly rather than left to whatever
+# the Alpine branch happens to carry on build day — two builds of the same ALTO
+# tag must not produce different audio. Alpine keeps only the current version
+# per branch, so when the package rotates this `apk add` fails loudly instead of
+# quietly upgrading; bump FFMPEG_VERSION (and smoke-test a real FLAC and Opus
+# job) as a deliberate change. Override ad hoc with
+# `--build-arg FFMPEG_VERSION=…`.
+ARG FFMPEG_VERSION=8.1.2-r0
+RUN apk add --no-cache "ffmpeg=${FFMPEG_VERSION}" \
+    && ffmpeg -version | head -1
 
 WORKDIR /app
 COPY --from=builder /alto /app/alto

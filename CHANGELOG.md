@@ -28,6 +28,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `ALTO_SCAN_WORKERS` (default `min(4, NumCPU)`) caps concurrent `ffprobe`.
 
 ### Changed
+- The image ships **ffmpeg 8.1.2** (was 6.1.2), on Alpine 3.24. The package is
+  pinned to an exact version, so two builds of the same ALTO tag encode with the
+  same ffmpeg instead of whatever the base image carried that day.
 - **Scanning is incremental.** A file whose `(size, mtime)` matches the index is
   reused without `ffprobe`, so a re-scan of an unchanged library is a walk plus
   `stat`. The schema migrates in place; the first scan after upgrading is still
