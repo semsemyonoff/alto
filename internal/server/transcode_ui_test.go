@@ -374,3 +374,71 @@ func TestTranscodeDock_OutputModeLabels(t *testing.T) {
 		t.Error("expect 'Replace' output mode label")
 	}
 }
+
+// TestDirPage_CheckboxColumn pins the per-row selection column: the lossless
+// rows are the only ones bound to the store, and the lossy rows render a
+// disabled box with no name attached. Nothing else in the suite covers the
+// {{if .Lossless}} guard, and inverting it would put lossy names into the
+// `files` list the server answers with 422 lossy_source_selected.
+func TestDirPage_CheckboxColumn(t *testing.T) {
+	srv, database, libDir := newTestServerWithRealTemplates(t)
+	libID := srv.cfg.Libraries[0].ID
+
+	absPath := filepath.Join(libDir, "Mixed")
+	mkdirAll(t, absPath)
+	dirID, err := database.UpsertDirectory(libID, "Mixed", "FLAC, MP3", false, "")
+	if err != nil {
+		t.Fatalf("UpsertDirectory: %v", err)
+	}
+	for _, tr := range []db.Track{
+		{DirectoryID: dirID, Filename: "01 A.flac", Codec: "flac", Bitrate: 900_000, Duration: 200.0, SampleRate: 44100, Channels: 2, Size: 22_500_000},
+		{DirectoryID: dirID, Filename: "02 B.mp3", Codec: "mp3", Bitrate: 320_000, Duration: 180.0, SampleRate: 44100, Channels: 2, Size: 7_200_000},
+	} {
+		if err := database.UpsertTrack(tr); err != nil {
+			t.Fatalf("UpsertTrack: %v", err)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, apiURL("/dir", map[string]string{"path": absPath}), nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+
+	// The header box drives select-all through the store.
+	if !strings.Contains(body, `$store.selection.toggleAll()`) {
+		t.Error("expect a select-all header checkbox bound to the selection store")
+	}
+
+	rows := strings.Split(body, `class="track-row"`)[1:]
+	if len(rows) != 2 {
+		t.Fatalf("track rows = %d, want 2", len(rows))
+	}
+
+	flacRow, mp3Row := rows[0], rows[1]
+	if !strings.Contains(flacRow, "01 A.flac") || !strings.Contains(mp3Row, "02 B.mp3") {
+		t.Fatalf("rows are not in directory order:\n%s", body)
+	}
+
+	if !strings.Contains(flacRow, `data-name="01 A.flac"`) {
+		t.Errorf("lossless row should carry its filename in data-name:\n%s", flacRow)
+	}
+	if !strings.Contains(flacRow, `$store.selection.toggle($el.dataset.name)`) {
+		t.Errorf("lossless row checkbox should be bound to the selection store:\n%s", flacRow)
+	}
+	if strings.Contains(flacRow, `disabled`) {
+		t.Errorf("lossless row checkbox should be enabled:\n%s", flacRow)
+	}
+
+	if strings.Contains(mp3Row, `data-name=`) {
+		t.Errorf("lossy row must not carry a selectable name:\n%s", mp3Row)
+	}
+	if strings.Contains(mp3Row, `$store.selection.toggle`) {
+		t.Errorf("lossy row checkbox must not be bound to the selection store:\n%s", mp3Row)
+	}
+	if !strings.Contains(mp3Row, `disabled`) {
+		t.Errorf("lossy row checkbox should be disabled:\n%s", mp3Row)
+	}
+}

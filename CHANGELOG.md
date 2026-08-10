@@ -11,6 +11,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
      section to ## [X.Y.Z] - <date> and uses it as the release body. -->
 
 ### Added
+- **Mixed directories can be transcoded per track.** An album holding both
+  lossless and lossy files no longer has to be all-or-nothing: tick *Skip lossy*
+  or pick tracks by hand in the new checkbox column, and only the lossless ones
+  are converted. `POST /api/transcode` gained `skip_lossy`, `files` and
+  `copy_skipped`; with `copy_skipped` the untouched files are copied verbatim
+  into the output so what lands there is still a complete album.
+- The `202` from `POST /api/transcode` now names the resolved selection —
+  `files` and `skipped` (each with a `lossy` / `not_selected` reason) — so a
+  client learns what was scheduled and what was left alone without a second call.
+- New endpoints: `GET /api/presets` (every built-in preset),
+  `GET /api/jobs/{id}` (full job detail — selection, output dir, failure reason,
+  timestamps), `GET /api/scan/state` (`{running, started_at}` for pollers) and
+  `POST /api/scan/dir?path=` (index one directory synchronously).
+- `422 output_name_conflict` refuses a job in which two sources would produce
+  the same output file name — previously the second one silently overwrote the
+  first, both between transcoded outputs and against files left in place.
 - `ALTO_SCAN_ON_START` (default `true`) — set to `false` to skip the startup
   library re-index on large collections where a full scan on every restart is
   too costly. Manual re-index (UI button / `POST /api/scan`) is unaffected.
@@ -18,6 +34,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `ffprobe` processes across all libraries during a scan.
 
 ### Changed
+- **API clients:** every JSON endpoint now reports failures as
+  `{"error", "code", …}` instead of `text/plain`. `code` is the contract (e.g.
+  `not_indexed`, `mixed_directory`, `lossy_source_selected`); the message is
+  prose that may change. `path_not_found` (absent from disk) and `not_indexed`
+  (present but unindexed) are deliberately distinct, so an agent can tell "scan
+  it first" from "you typed the path wrong".
+- Finished jobs are tombstoned rather than deleted: `GET /api/jobs/{id}` keeps
+  answering with the outcome after the job leaves the queue listing, so
+  `404 job_not_found` now means the id never existed rather than "you polled
+  too late".
 - Library scanning is now incremental: each track stores its file size and
   mtime, and a file whose `(size, mtime)` still matches the indexed row is
   reused without spawning `ffprobe`. A re-scan of an unchanged library is a

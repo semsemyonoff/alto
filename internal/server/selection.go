@@ -25,7 +25,7 @@ const (
 // File-selection validation failures. They are sentinels rather than code
 // strings so handlers map them with errors.Is, the way safepath.go does.
 var (
-	errFileSeparator = errors.New(`file name must not contain a path separator or ".."`)
+	errFileSeparator = errors.New(`file name must be a bare file name, not a path`)
 	errFileDuplicate = errors.New("duplicate file name")
 	errFileUnknown   = errors.New("file not found in the directory index")
 	errFileLossy     = errors.New("file is not a lossless source")
@@ -74,9 +74,12 @@ func partitionByLossless(tracks []db.Track) (lossless, lossy []db.Track) {
 // The selected tracks come back in directory order, not request order, so the
 // job's file list is stable regardless of how the client ordered its request.
 func validateFileNames(names []string, tracks []db.Track) ([]db.Track, error) {
+	// Only whole-segment "." and ".." are traversal; a substring ".." is an
+	// ordinary character run that real track names carry ("03 Wait For It....flac").
+	// Rejecting it would make those directories impossible to narrow with `files`.
 	var bad []string
 	for _, n := range names {
-		if strings.ContainsAny(n, `/\`) || strings.Contains(n, "..") {
+		if n == "" || n == "." || n == ".." || strings.ContainsAny(n, `/\`) {
 			bad = append(bad, n)
 		}
 	}
@@ -191,11 +194,11 @@ func unselectedTracks(all, selected []db.Track) []db.Track {
 	return out
 }
 
-// skippedReport lists the tracks of all that are absent from selected, in the
-// order they appear in all.
-func skippedReport(all, selected []db.Track, reason string) []skippedDTO {
+// skippedReport describes the unselected tracks, in the order they were given,
+// as the 202 body's `skipped` list.
+func skippedReport(unselected []db.Track, reason string) []skippedDTO {
 	var out []skippedDTO
-	for _, t := range unselectedTracks(all, selected) {
+	for _, t := range unselected {
 		out = append(out, skippedDTO{Name: t.Filename, Codec: t.Codec, Reason: reason})
 	}
 	return out

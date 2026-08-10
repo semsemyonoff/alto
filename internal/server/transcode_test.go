@@ -595,6 +595,81 @@ func TestHandleTranscodeStart_PassthroughNameConflict(t *testing.T) {
 	})
 }
 
+// TestHandleTranscodeStart_ReplaceUnselectedNameConflict covers the collision
+// replace mode creates on its own: there is no pass-through list (copy_skipped
+// is refused for it), but the destination is the source directory, so an
+// unselected track already occupies its own name there. transcodeReplace
+// renames the output over it and only backs up the selected originals, so
+// without this check the unselected file is destroyed with no way back.
+func TestHandleTranscodeStart_ReplaceUnselectedNameConflict(t *testing.T) {
+	// A lossless source and a lossy one that already carries the target
+	// extension — the shape of an album holding both a FLAC and an Opus rip.
+	tracks := []db.Track{
+		{Filename: "01 A.flac", Codec: "flac"},
+		{Filename: "01 A.opus", Codec: "opus"},
+	}
+
+	t.Run("skip_lossy in replace mode", func(t *testing.T) {
+		srv, dirPath := newTestServerWithDirTracks(t, &mockEngine{}, tracks)
+		w := postTranscode(t, srv, map[string]any{
+			"path": dirPath, "preset": "Music High", "codec": "opus",
+			"output_mode": "replace", "skip_lossy": true,
+		})
+		assertAPIError(t, w, http.StatusUnprocessableEntity, codeOutputNameConflict)
+
+		var resp struct {
+			Conflicts []outputConflictDTO `json:"conflicts"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatal(err)
+		}
+		if len(resp.Conflicts) != 1 || resp.Conflicts[0].Output != "01 A.opus" {
+			t.Fatalf("conflicts = %+v, want one on %q", resp.Conflicts, "01 A.opus")
+		}
+		if strings.Join(resp.Conflicts[0].Sources, ",") != "01 A.flac,01 A.opus" {
+			t.Errorf("sources = %v, want the selected source then the in-place file", resp.Conflicts[0].Sources)
+		}
+	})
+
+	t.Run("an explicit files list hits the same check", func(t *testing.T) {
+		srv, dirPath := newTestServerWithDirTracks(t, &mockEngine{}, tracks)
+		w := postTranscode(t, srv, map[string]any{
+			"path": dirPath, "preset": "Music High", "codec": "opus",
+			"output_mode": "replace", "files": []string{"01 A.flac"},
+		})
+		assertAPIError(t, w, http.StatusUnprocessableEntity, codeOutputNameConflict)
+	})
+
+	// Out of replace mode the unselected file is not in the destination at all,
+	// so the same selection is perfectly fine.
+	t.Run("the same selection in shared mode starts", func(t *testing.T) {
+		srv, dirPath := newTestServerWithDirTracks(t, &mockEngine{}, tracks)
+		w := postTranscode(t, srv, map[string]any{
+			"path": dirPath, "preset": "Music High", "codec": "opus",
+			"output_mode": "shared", "skip_lossy": true,
+		})
+		if w.Code != http.StatusAccepted {
+			t.Fatalf("status = %d, want 202: %s", w.Code, w.Body.String())
+		}
+	})
+
+	// The unselected name has to actually collide: an mp3 left in place never
+	// claims the ".opus" name the job produces.
+	t.Run("an unselected name distinct from every output starts", func(t *testing.T) {
+		srv, dirPath := newTestServerWithDirTracks(t, &mockEngine{}, []db.Track{
+			{Filename: "01 A.flac", Codec: "flac"},
+			{Filename: "02 B.mp3", Codec: "mp3"},
+		})
+		w := postTranscode(t, srv, map[string]any{
+			"path": dirPath, "preset": "Music High", "codec": "opus",
+			"output_mode": "replace", "skip_lossy": true,
+		})
+		if w.Code != http.StatusAccepted {
+			t.Fatalf("status = %d, want 202: %s", w.Code, w.Body.String())
+		}
+	})
+}
+
 // acceptedBody decodes a 202 transcode response.
 func acceptedBody(t *testing.T, w *httptest.ResponseRecorder) transcodeAcceptedDTO {
 	t.Helper()

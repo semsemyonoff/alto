@@ -423,9 +423,12 @@ func (s *Server) handleScanStatus(w http.ResponseWriter, r *http.Request) {
 // poll instead of holding the SSE stream open.
 // GET /api/scan/state
 func (s *Server) handleScanState(w http.ResponseWriter, r *http.Request) {
+	// state() reports the start time only while a scan is running, and start()
+	// stamps it under the same mutex that sets the flag, so `running` alone is
+	// enough of a guard here.
 	running, startedAt := s.scan.state()
 	dto := scanStateDTO{Running: running}
-	if running && !startedAt.IsZero() {
+	if running {
 		t := startedAt.UTC()
 		dto.StartedAt = &t
 	}
@@ -470,6 +473,8 @@ func (s *Server) handleScanDir(w http.ResponseWriter, r *http.Request) {
 			writeAPIError(w, http.StatusForbidden, codePathForbidden, "directory is excluded from scanning", nil)
 		case errors.Is(scanErr, os.ErrNotExist):
 			writeAPIError(w, http.StatusNotFound, codePathNotFound, "directory not found", nil)
+		case errors.Is(scanErr, library.ErrNotDirectory):
+			writeAPIError(w, http.StatusNotFound, codePathNotFound, "path is not a directory", nil)
 		default:
 			slog.Error("handleScanDir: ScanDir", "path", rel, "err", scanErr)
 			writeAPIError(w, http.StatusInternalServerError, codeInternalError, "internal error", nil)

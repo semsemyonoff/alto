@@ -41,7 +41,7 @@ Alpine.store('selection', selectionStore())
 
 function syncSelectionStore(): void {
   const config = readSelectionConfig(document)
-  ;(Alpine.store('selection') as SelectionStore).init(config.path, config.tracks)
+  ;(Alpine.store('selection') as SelectionStore).load(config.path, config.tracks)
 }
 
 Alpine.data('altoDock', altoDock)

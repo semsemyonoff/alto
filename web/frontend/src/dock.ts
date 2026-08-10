@@ -190,6 +190,7 @@ interface DockData {
   readonly skipLossy: boolean
   readonly skippedCount: number
   readonly showCopySkipped: boolean
+  readonly showSelection: boolean
   readonly startState: StartState
   readonly canStart: boolean
   readonly statusText: string
@@ -290,6 +291,12 @@ export function altoDock(): DockData {
     },
     get showCopySkipped(): boolean {
       return this.skippedCount > 0 && this.outputMode !== 'replace'
+    },
+    // With nothing lossless in the directory no selection can lead to a job
+    // START would accept, so the whole panel stays hidden rather than offering
+    // two toggles that cannot change the "No lossless tracks" verdict.
+    get showSelection(): boolean {
+      return this.losslessCount > 0 && (this.hasLossy || this.showCopySkipped)
     },
 
     get startState(): StartState {

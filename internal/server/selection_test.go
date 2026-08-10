@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/semsemyonoff/ALTO/internal/db"
+	"github.com/semsemyonoff/ALTO/internal/transcode"
 )
 
 func tracksOf(pairs ...string) []db.Track {
@@ -100,6 +101,7 @@ func TestValidateFileNames(t *testing.T) {
 		"02 B.mp3", "mp3",
 		"03 C.ape", "APE",
 		"04 D.wav", "pcm_s16le",
+		"05 Wait For It....flac", "flac",
 	)
 
 	tests := []struct {
@@ -136,6 +138,25 @@ func TestValidateFileNames(t *testing.T) {
 			input:     []string{"..", "01 A.flac"},
 			wantErr:   errFileSeparator,
 			wantNames: []string{".."},
+		},
+		{
+			name:      "current directory",
+			input:     []string{"."},
+			wantErr:   errFileSeparator,
+			wantNames: []string{"."},
+		},
+		{
+			name:      "empty name",
+			input:     []string{""},
+			wantErr:   errFileSeparator,
+			wantNames: []string{""},
+		},
+		// A run of dots inside a name is ordinary text, not traversal: an
+		// indexed "05 Wait For It....flac" must stay selectable.
+		{
+			name:         "double dot inside a legitimate file name",
+			input:        []string{"05 Wait For It....flac"},
+			wantSelected: []string{"05 Wait For It....flac"},
 		},
 		{
 			name:      "duplicate",
@@ -261,9 +282,81 @@ func TestSkippedReport(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := skippedReport(all, tt.selected, tt.reason)
+			got := skippedReport(unselectedTracks(all, tt.selected), tt.reason)
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("skippedReport = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestDetectOutputConflicts exercises the detector directly: the handler tests
+// only ever produce a single conflict, leaving the multi-conflict ordering and
+// the selected-before-name-preserving source order unpinned.
+func TestDetectOutputConflicts(t *testing.T) {
+	tests := []struct {
+		name         string
+		selected     []db.Track
+		namePreserve []db.Track
+		codec        transcode.Codec
+		want         []outputConflictDTO
+	}{
+		{
+			name:     "no conflict",
+			selected: tracksOf("01 A.ape", "ape", "02 B.wav", "pcm_s16le"),
+			codec:    transcode.CodecFLAC,
+		},
+		{
+			name:     "two selected sources collapse onto one output",
+			selected: tracksOf("01 A.ape", "ape", "01 A.wav", "pcm_s16le"),
+			codec:    transcode.CodecFLAC,
+			want: []outputConflictDTO{
+				{Output: "01 A.flac", Sources: []string{"01 A.ape", "01 A.wav"}},
+			},
+		},
+		{
+			name:         "a name-preserving file claims a transcode output",
+			selected:     tracksOf("01 A.ape", "ape"),
+			namePreserve: tracksOf("01 A.flac", "flac"),
+			codec:        transcode.CodecFLAC,
+			want: []outputConflictDTO{
+				{Output: "01 A.flac", Sources: []string{"01 A.ape", "01 A.flac"}},
+			},
+		},
+		{
+			// Sorted by output name, so "01" comes before "02" even though the
+			// tracks are given the other way round.
+			name:         "several conflicts come back sorted by output name",
+			selected:     tracksOf("02 B.ape", "ape", "01 A.ape", "ape"),
+			namePreserve: tracksOf("02 B.flac", "flac", "01 A.flac", "flac"),
+			codec:        transcode.CodecFLAC,
+			want: []outputConflictDTO{
+				{Output: "01 A.flac", Sources: []string{"01 A.ape", "01 A.flac"}},
+				{Output: "02 B.flac", Sources: []string{"02 B.ape", "02 B.flac"}},
+			},
+		},
+		{
+			name:     "three sources on one output list all of them",
+			selected: tracksOf("01 A.ape", "ape", "01 A.wav", "pcm_s16le", "01 A.wv", "wavpack"),
+			codec:    transcode.CodecFLAC,
+			want: []outputConflictDTO{
+				{Output: "01 A.flac", Sources: []string{"01 A.ape", "01 A.wav", "01 A.wv"}},
+			},
+		},
+		{
+			// A same-extension transcode maps each name onto itself, so nothing
+			// collapses that was not already colliding on disk.
+			name:     "same extension is not a conflict with itself",
+			selected: tracksOf("01 A.flac", "flac", "02 B.flac", "flac"),
+			codec:    transcode.CodecFLAC,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := detectOutputConflicts(tt.selected, tt.namePreserve, tt.codec)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("detectOutputConflicts = %+v, want %+v", got, tt.want)
 			}
 		})
 	}

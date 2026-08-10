@@ -326,7 +326,7 @@ describe('altoDock', () => {
   function initDock(tracks: TrackInfo[] = flacTracks(7)): TestDock {
     const el = document.getElementById('tc-dock') as HTMLElement
     const store = selectionStore()
-    store.init(el.dataset.path ?? '', tracks)
+    store.load(el.dataset.path ?? '', tracks)
     const dock = altoDock() as unknown as TestDock
     dock.$el = el
     dock.$store = { selection: store }
@@ -442,6 +442,32 @@ describe('altoDock', () => {
       dock.outputMode = 'shared'
       expect(dock.skippedCount).toBe(0)
       expect(dock.showCopySkipped).toBe(false)
+    })
+
+    it('shows the selection panel on a mixed directory and hides it on an all-lossless one', () => {
+      expect(initMixedDock().showSelection).toBe(true)
+
+      const lossless = initDock()
+      lossless.outputMode = 'shared'
+      expect(lossless.showSelection).toBe(false)
+    })
+
+    // START is already disabled with "No lossless tracks" here, so neither
+    // toggle could lead to a job the server would accept.
+    it('hides the selection panel entirely on an all-lossy directory', () => {
+      document.body.innerHTML = `
+        <script type="application/json" id="tc-presets-data">${JSON.stringify(PRESETS)}</script>
+        <aside id="tc-dock" data-path="/music/Lossy" data-can-transcode="false" data-track-count="2"></aside>
+      `
+      const dock = initDock([
+        { name: '01 A.mp3', codec: 'mp3', lossless: false },
+        { name: '02 B.mp3', codec: 'mp3', lossless: false },
+      ])
+      dock.outputMode = 'shared'
+      expect(dock.hasLossy).toBe(true)
+      expect(dock.showCopySkipped).toBe(true)
+      expect(dock.showSelection).toBe(false)
+      expect(dock.statusText).toBe('No lossless tracks')
     })
 
     it('clears the toggle when a row checkbox is touched', () => {

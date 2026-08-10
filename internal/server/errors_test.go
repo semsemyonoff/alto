@@ -171,8 +171,10 @@ func TestAPIErrorCodes(t *testing.T) {
 		codeCopySkippedNotApplicable,
 		codeEngineUnavailable,
 		codeJobAlreadyRunning,
+		codeJobAlreadyFinished,
 		codeJobNotFound,
 		codeScanRunning,
+		codeNoCover,
 		codeInternalError,
 	}
 	want := []string{
@@ -191,8 +193,10 @@ func TestAPIErrorCodes(t *testing.T) {
 		"copy_skipped_not_applicable",
 		"engine_unavailable",
 		"job_already_running",
+		"job_already_finished",
 		"job_not_found",
 		"scan_running",
+		"no_cover",
 		"internal_error",
 	}
 

@@ -331,6 +331,12 @@ func (s *Scanner) indexAudioDir(ctx context.Context, lib db.Library, rel, absPat
 // .alto-* path, the configured output directory, or a path outside the library.
 var ErrDirExcluded = errors.New("directory excluded from scanning")
 
+// ErrNotDirectory reports a path that exists but is a file. Callers answer it
+// like a missing directory: without it os.ReadDir's ENOTDIR would surface as an
+// unclassified internal error, so a client that pointed at a track instead of
+// its album would be told the server broke.
+var ErrNotDirectory = errors.New("path is not a directory")
+
 // ScanDir indexes exactly one directory of lib, identified by its path relative
 // to the library root ("" is the root itself). It applies the same exclusions,
 // cache reuse and cover resolution a full scan applies to that directory, and
@@ -347,6 +353,14 @@ func (s *Scanner) ScanDir(ctx context.Context, lib db.Library, relPath string) e
 
 	if err := s.checkScannable(lib, rel, absPath); err != nil {
 		return err
+	}
+
+	info, err := os.Stat(absPath)
+	if err != nil {
+		return fmt.Errorf("stat %q: %w", absPath, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%q: %w", absPath, ErrNotDirectory)
 	}
 
 	entries, err := os.ReadDir(absPath)

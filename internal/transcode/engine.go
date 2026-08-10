@@ -203,6 +203,17 @@ func copyPassthroughFiles(ctx context.Context, job Job, outDir string) error {
 		}
 		src := filepath.Join(job.SourceDir, fi.Name)
 		dst := filepath.Join(outDir, fi.Name)
+		// The scanner never indexes a symlink, so one here means the entry
+		// changed since it was indexed; following it would copy a file from
+		// outside the library. Same reason copyNonAudioFiles skips them, except
+		// this list is explicit, so an unusable entry fails the job.
+		st, err := os.Lstat(src)
+		if err != nil {
+			return fmt.Errorf("stat %s: %w", fi.Name, err)
+		}
+		if st.Mode()&fs.ModeSymlink != 0 {
+			return fmt.Errorf("copy %s: source is a symlink", fi.Name)
+		}
 		slog.Info("copying file verbatim", "file", fi.Name, "output", dst)
 		if err := copyFile(ctx, src, dst); err != nil {
 			// A canceled context aborts a large copy mid-stream; surface the

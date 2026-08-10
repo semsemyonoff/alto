@@ -1102,6 +1102,19 @@ func TestHandleScanDir_UnindexedDirectoryBecomesTranscodable(t *testing.T) {
 	}
 }
 
+// TestHandleScanDir_FilePath covers the likeliest client mistake: pointing at a
+// track instead of the album that holds it. The path resolves and lives inside
+// a library, so it gets past validation; only ScanDir can tell it is not a
+// directory, and it must not be reported as a server fault.
+func TestHandleScanDir_FilePath(t *testing.T) {
+	srv, libDir := newTestServerWithRealScanner(t, nil, "")
+	albumDir := filepath.Join(libDir, "Artist", "Album")
+	writeFiles(t, albumDir, "01 A.flac")
+
+	w := postScanDir(t, srv, filepath.Join(albumDir, "01 A.flac"))
+	assertAPIError(t, w, http.StatusNotFound, codePathNotFound)
+}
+
 // TestHandleScanDir_IndexesAncestors pins that the freshly indexed directory is
 // reachable from the tree, not orphaned.
 func TestHandleScanDir_IndexesAncestors(t *testing.T) {

@@ -167,39 +167,50 @@ describe('hasLossyTracks', () => {
 describe('selectionStore', () => {
   it('starts with every lossless track selected', () => {
     const store = selectionStore()
-    store.init('/music/Album', MIXED)
+    store.load('/music/Album', MIXED)
     expect(store.names).toEqual(['01 A.flac', '03 C.flac'])
     expect(store.losslessCount).toBe(2)
     expect(store.allSelected).toBe(true)
   })
 
-  it('keeps the selection when re-initialised with the same path', () => {
+  it('keeps the selection when reloaded with the same path and track list', () => {
     const store = selectionStore()
-    store.init('/music/Album', MIXED)
+    store.load('/music/Album', MIXED)
     store.toggle('01 A.flac')
-    store.init('/music/Album', MIXED)
+    store.load('/music/Album', MIXED)
     expect(store.names).toEqual(['03 C.flac'])
   })
 
   it('resets the selection when the path changes', () => {
     const store = selectionStore()
-    store.init('/music/Album', MIXED)
+    store.load('/music/Album', MIXED)
     store.toggle('01 A.flac')
-    store.init('/music/Other', MIXED)
+    store.load('/music/Other', MIXED)
     expect(store.names).toEqual(['01 A.flac', '03 C.flac'])
   })
 
-  it('reports selectability and selected state per track', () => {
+  // A re-indexed directory renders the same path with a different track list;
+  // keeping the old one would let the UI send names the server rejects.
+  it('resets the selection when the same path renders a different track list', () => {
     const store = selectionStore()
-    store.init('/music/Album', MIXED)
-    expect(store.isSelectable('01 A.flac')).toBe(true)
-    expect(store.isSelectable('02 B.mp3')).toBe(false)
+    store.load('/music/Album', MIXED)
+    store.toggle('01 A.flac')
+    const rescanned = [...MIXED, { name: '04 D.flac', codec: 'flac', lossless: true }]
+    store.load('/music/Album', rescanned)
+    expect(store.tracks).toEqual(rescanned)
+    expect(store.names).toEqual(['01 A.flac', '03 C.flac', '04 D.flac'])
+  })
+
+  it('reports selected state per track', () => {
+    const store = selectionStore()
+    store.load('/music/Album', MIXED)
+    expect(store.isSelected('01 A.flac')).toBe(true)
     expect(store.isSelected('02 B.mp3')).toBe(false)
   })
 
   it('never selects a lossy track through toggle', () => {
     const store = selectionStore()
-    store.init('/music/Album', MIXED)
+    store.load('/music/Album', MIXED)
     store.toggle('02 B.mp3')
     expect(store.isSelected('02 B.mp3')).toBe(false)
     expect(store.names).toEqual(['01 A.flac', '03 C.flac'])
@@ -207,7 +218,7 @@ describe('selectionStore', () => {
 
   it('toggles all off and back on', () => {
     const store = selectionStore()
-    store.init('/music/Album', MIXED)
+    store.load('/music/Album', MIXED)
     store.toggleAll()
     expect(store.names).toEqual([])
     expect(store.allSelected).toBe(false)
@@ -217,13 +228,11 @@ describe('selectionStore', () => {
 
   it('defaults skip-lossy on for a mixed directory and off for an all-lossless one', () => {
     const mixed = selectionStore()
-    mixed.init('/music/Album', MIXED)
-    expect(mixed.hasLossy).toBe(true)
+    mixed.load('/music/Album', MIXED)
     expect(mixed.skipLossy).toBe(true)
 
     const lossless = selectionStore()
-    lossless.init('/music/Lossless', [{ name: '01 A.flac', codec: 'flac', lossless: true }])
-    expect(lossless.hasLossy).toBe(false)
+    lossless.load('/music/Lossless', [{ name: '01 A.flac', codec: 'flac', lossless: true }])
     expect(lossless.skipLossy).toBe(false)
   })
 
@@ -231,7 +240,7 @@ describe('selectionStore', () => {
   // so an explicit per-row choice has to drop the toggle.
   it('clears skip-lossy when a row or the header checkbox is touched', () => {
     const store = selectionStore()
-    store.init('/music/Album', MIXED)
+    store.load('/music/Album', MIXED)
     store.toggle('01 A.flac')
     expect(store.skipLossy).toBe(false)
 
@@ -242,7 +251,7 @@ describe('selectionStore', () => {
 
   it('restores the full lossless selection when skip-lossy is set back on', () => {
     const store = selectionStore()
-    store.init('/music/Album', MIXED)
+    store.load('/music/Album', MIXED)
     store.toggle('01 A.flac')
     expect(store.names).toEqual(['03 C.flac'])
     store.setSkipLossy(true)
@@ -251,7 +260,7 @@ describe('selectionStore', () => {
 
   it('leaves the selection alone when skip-lossy is switched off', () => {
     const store = selectionStore()
-    store.init('/music/Album', MIXED)
+    store.load('/music/Album', MIXED)
     store.setSkipLossy(false)
     expect(store.skipLossy).toBe(false)
     expect(store.names).toEqual(['01 A.flac', '03 C.flac'])
@@ -259,10 +268,30 @@ describe('selectionStore', () => {
 
   it('has nothing selectable in an all-lossy directory', () => {
     const store = selectionStore()
-    store.init('/music/Lossy', ALL_LOSSY)
+    store.load('/music/Lossy', ALL_LOSSY)
     expect(store.losslessCount).toBe(0)
     expect(store.allSelected).toBe(false)
     store.toggleAll()
     expect(store.names).toEqual([])
+  })
+})
+
+// Alpine calls a store's own `init()` — with no arguments — the moment the
+// store is registered. A store method named `init` would therefore run before
+// any page data exists and throw out of Alpine.store(), aborting main.ts's
+// top-level evaluation: no Alpine.data registrations, no Alpine.start(), every
+// island on the page dead. That is why the entry point is called `load`.
+describe('Alpine store registration', () => {
+  it('exposes no init member for Alpine to auto-call', () => {
+    expect('init' in selectionStore()).toBe(false)
+  })
+
+  it('survives registration with the real Alpine and stays usable', async () => {
+    const Alpine = (await import('alpinejs')).default
+    expect(() => Alpine.store('selection', selectionStore())).not.toThrow()
+
+    const store = Alpine.store('selection') as ReturnType<typeof selectionStore>
+    store.load('/music/Album', MIXED)
+    expect(store.names).toEqual(['01 A.flac', '03 C.flac'])
   })
 })

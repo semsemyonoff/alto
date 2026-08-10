@@ -199,8 +199,8 @@ code, so a client never has to match on message text.
 | `GET /api/jobs/events` | SSE stream of job updates |
 | `POST /api/jobs/{id}/cancel` | Cancel a queued or running job |
 | `POST /api/jobs/{id}/remove` | Drop a terminal job from the queue listing |
-| `GET /api/transcode/{jobID}/log` | Per-job ffmpeg log |
-| `POST /api/scan` | Start a full re-index of every library (asynchronous) |
+| `GET /api/transcode/{jobID}/log[?n=N]` | Per-job ffmpeg log; `n` tails the last N lines |
+| `POST /api/scan[?library_id=N]` | Start a re-index, asynchronously — every library, or one by id |
 | `GET /api/scan/state` | `{running, started_at}` for the full scan |
 | `GET /api/scan/status` | SSE stream of full-scan progress |
 | `POST /api/scan/dir?path=` | Index exactly one directory, synchronously |
@@ -235,9 +235,18 @@ directory transcodes in full, and a mixed one is refused with
 |---|---|---|
 | neither | all lossless | transcodes everything |
 | neither | mixed | `422 mixed_directory` |
+| neither | all lossy | `422 mixed_directory` |
 | `skip_lossy` | mixed | transcodes the lossless tracks only |
 | `skip_lossy` | all lossy | `422 no_lossless_tracks` |
 | `files` | any | transcodes exactly the listed names |
+
+`mixed_directory` says only "not every track here is lossless", so an all-lossy
+directory with no selection gets it too. `no_lossless_tracks` is reserved for
+`skip_lossy` finding nothing left to do.
+
+In `output_mode: "replace"` the unselected tracks stay where they are, and that
+directory is also the destination — so a job whose output would land on one of
+them is refused with `422 output_name_conflict` rather than overwriting it.
 
 A successful call answers `202` naming both halves of the resolved selection, so
 a client learns what was scheduled and what was left alone without a second
@@ -252,8 +261,38 @@ request:
 ```
 
 `reason` is `lossy` (dropped by `skip_lossy`) or `not_selected` (absent from
-`files`). Poll `GET /api/jobs/{id}` for the outcome; a terminal job stays
-answerable there long after it leaves the queue listing.
+`files`).
+
+### Following a job
+
+```jsonc
+GET /api/jobs/{id}
+200 {
+  "id": "a1b2c3d4",
+  "status": "done",               // queued | running | done | failed | canceled
+  "pct": 100,
+  "title": "Music/Some Artist/Some Album",
+  "sub": "flac → opus/Music High",
+  "dir": "/music/Some Artist/Some Album",
+  "error": "",                    // populated only when status is "failed"
+  "output_dir": "/out/Music/Some Artist/Some Album",
+  "files":   ["01 A.flac", "02 B.flac"],
+  "skipped": [{"name": "03 C.mp3", "codec": "mp3", "reason": "lossy"}],
+  "total_files": 2,
+  "done_files": 2,
+  "created_at":  "2026-08-10T12:00:00Z",
+  "started_at":  "2026-08-10T12:00:01Z",   // null until a worker picks it up
+  "finished_at": "2026-08-10T12:01:30Z",   // null until it reaches a terminal state
+  "evicted": false
+}
+```
+
+A terminal job stays answerable here long after it leaves `GET /api/jobs`:
+half an hour after finishing it is tombstoned, which sets `evicted: true` and
+drops it from the queue listing and the event stream while this endpoint keeps
+reporting its outcome. So `404 job_not_found` means the id never existed, not
+"you polled too late". Tombstones are dropped for real only once more than 256
+of them accumulate, oldest first.
 
 ### Errors
 

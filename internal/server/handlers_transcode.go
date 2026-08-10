@@ -161,7 +161,7 @@ func (s *Server) handleTranscodeStart(w http.ResponseWriter, r *http.Request) {
 	var skipped []skippedDTO
 	if skipReason != "" {
 		unselected = unselectedTracks(tracks, selected)
-		skipped = skippedReport(tracks, selected, skipReason)
+		skipped = skippedReport(unselected, skipReason)
 	}
 
 	preset, err := resolvePreset(req)
@@ -195,7 +195,17 @@ func (s *Server) handleTranscodeStart(w http.ResponseWriter, r *http.Request) {
 	// Distinct sources can collapse onto one output name once the extension is
 	// rewritten ("01 A.ape" and "01 A.flac" both render to "01 A.flac"), and a
 	// pass-through copy keeps its own name — so refuse before anything is written.
-	if conflicts := detectOutputConflicts(selected, passthrough, preset.Codec); len(conflicts) > 0 {
+	//
+	// Replace mode has no pass-through list, but the destination *is* the source
+	// directory, so every unselected track is already sitting there under its own
+	// name: transcodeReplace would rename its output straight over one, and only
+	// the selected originals are backed up. They count as name-preserving files
+	// for the same reason a pass-through copy does.
+	inPlace := passthrough
+	if outputMode == transcode.OutputReplace {
+		inPlace = unselected
+	}
+	if conflicts := detectOutputConflicts(selected, inPlace, preset.Codec); len(conflicts) > 0 {
 		writeAPIError(w, http.StatusUnprocessableEntity, codeOutputNameConflict,
 			"several selected files would produce the same output file name",
 			map[string]any{"conflicts": conflicts})

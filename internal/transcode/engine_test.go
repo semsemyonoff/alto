@@ -875,6 +875,105 @@ func TestTranscodePassthroughCopyFailureFailsJob(t *testing.T) {
 	}
 }
 
+// TestTranscodePassthroughRefusesSymlink pins the same guard copyNonAudioFiles
+// applies by skipping symlinks: the scanner never indexes one, so a symlink
+// here appeared after indexing and following it would copy a file from outside
+// the library into the output.
+func TestTranscodePassthroughRefusesSymlink(t *testing.T) {
+	srcDir := t.TempDir()
+	outputDir := t.TempDir()
+	outsideDir := t.TempDir()
+
+	outside := filepath.Join(outsideDir, "secret.mp3")
+	if err := os.WriteFile(outside, []byte("outside the library"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "a.flac"), []byte("audio"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(srcDir, "b.mp3")); err != nil {
+		t.Fatal(err)
+	}
+
+	e := &Engine{
+		ffmpegBin: "ffmpeg",
+		ffmpegRun: func(ctx context.Context, args []string, progressFn func(string)) error {
+			return os.WriteFile(args[len(args)-1], []byte("transcoded"), 0o644)
+		},
+		probeFile: func(ctx context.Context, path string) error { return nil },
+		diskAvail: func(string) (uint64, error) { return 1 << 30, nil },
+	}
+
+	job := Job{
+		ID:          "passthrough-symlink",
+		LibraryRoot: srcDir,
+		LibraryName: "music",
+		SourceDir:   srcDir,
+		OutputMode:  OutputShared,
+		OutputDir:   outputDir,
+		Preset:      OpusMusicHigh,
+		Files:       []FileInfo{{Name: "a.flac", Duration: 60}},
+		Passthrough: []FileInfo{{Name: "b.mp3", Duration: 60}},
+	}
+
+	err := e.Transcode(context.Background(), job, nil)
+	if err == nil {
+		t.Fatal("expected the job to fail on a symlinked pass-through source")
+	}
+	if !strings.Contains(err.Error(), "b.mp3") {
+		t.Errorf("error %v should name the offending file", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(outputDir, "music", "b.mp3")); !os.IsNotExist(statErr) {
+		t.Error("the symlink target was copied into the output directory")
+	}
+}
+
+// TestTranscodePassthroughCancellation pins that a job canceled during the
+// pass-through phase reports context.Canceled, so the queue marks it "canceled"
+// rather than "failed".
+func TestTranscodePassthroughCancellation(t *testing.T) {
+	srcDir := t.TempDir()
+	outputDir := t.TempDir()
+
+	for _, name := range []string{"a.flac", "b.mp3"} {
+		if err := os.WriteFile(filepath.Join(srcDir, name), []byte("content:"+name), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	e := &Engine{
+		ffmpegBin: "ffmpeg",
+		ffmpegRun: func(ctx context.Context, args []string, progressFn func(string)) error {
+			return os.WriteFile(args[len(args)-1], []byte("transcoded"), 0o644)
+		},
+		// Cancel once the transcode phase is done, so the pass-through loop is
+		// the first thing to observe it.
+		probeFile: func(ctx context.Context, path string) error { cancel(); return nil },
+		diskAvail: func(string) (uint64, error) { return 1 << 30, nil },
+	}
+
+	job := Job{
+		ID:          "passthrough-cancel",
+		LibraryRoot: srcDir,
+		LibraryName: "music",
+		SourceDir:   srcDir,
+		OutputMode:  OutputShared,
+		OutputDir:   outputDir,
+		Preset:      OpusMusicHigh,
+		Files:       []FileInfo{{Name: "a.flac", Duration: 60}},
+		Passthrough: []FileInfo{{Name: "b.mp3", Duration: 60}},
+	}
+
+	err := e.Transcode(ctx, job, nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(outputDir, "music", "b.mp3")); !os.IsNotExist(statErr) {
+		t.Error("a canceled job should not have copied the pass-through file")
+	}
+}
+
 // TestTranscodeEmptyPassthroughUnchanged asserts the default (no pass-through)
 // output is exactly what it was before the feature: audio sources are never
 // copied into the output directory.
