@@ -184,6 +184,11 @@ Everything the UI does is available as JSON over HTTP — enough to drive ALTO f
 a script or a download-automation pipeline. Errors carry a stable machine-readable
 code, so a client never has to match on message text.
 
+**The contract is `GET /api/openapi.yaml`** — an OpenAPI 3.1 document covering every
+`/api/*` route, its request and response schemas, and the full error-code enum. Tests
+hold it to the code, so it cannot quietly go stale. What follows here is a summary for
+reading; when the two disagree, the document is right.
+
 ### Endpoints
 
 | Endpoint | Purpose |
@@ -205,6 +210,7 @@ code, so a client never has to match on message text.
 | `GET /api/scan/status` | SSE stream of full-scan progress |
 | `POST /api/scan/dir?path=` | Index exactly one directory, synchronously |
 | `GET /api/version` | Build version |
+| `GET /api/openapi.yaml` | The OpenAPI 3.1 description of everything above |
 
 ### Starting a job
 
