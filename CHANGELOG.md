@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 <!-- Write notes for the next release here. "Cut release" promotes this
      section to ## [X.Y.Z] - <date> and uses it as the release body. -->
 
+## [0.2.0] - 2026-08-10
+
 **Breaking:** JSON endpoints now return `{"error", "code", …}` instead of
 `text/plain`. Match on `code`, not on the message.
 
@@ -38,6 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Finished jobs are tombstoned, not deleted — `GET /api/jobs/{id}` still answers
   after the job leaves the queue, and `404 job_not_found` now means the id never
   existed.
+
 
 ## [0.1.0] - 2026-07-11
 

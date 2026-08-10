@@ -14,7 +14,7 @@ info:
   title: ALTO API
   # The ALTO release this document describes. Pinned to VERSION by
   # TestOpenAPIVersionMatchesRelease and bumped by the release-cut workflow.
-  version: 0.1.0
+  version: 0.2.0
   summary: Browse an indexed music library and transcode it with ffmpeg.
   description: |
     ALTO indexes one or more music libraries and transcodes lossless albums to
