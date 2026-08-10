@@ -2221,3 +2221,69 @@ func TestRoutesUnchangedBehaviour(t *testing.T) {
 		})
 	}
 }
+
+// --- GET /api/openapi.yaml ---
+
+// TestHandleOpenAPI_ServesDocument asserts the endpoint serves the real
+// web/static/openapi.yaml with an explicit application/yaml content type —
+// ".yaml" is not in Go's built-in MIME table, so an unset header would be
+// content-sniffed to text/plain and would vary with /etc/mime.types.
+func TestHandleOpenAPI_ServesDocument(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/openapi.yaml", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "application/yaml" {
+		t.Errorf("content type = %q, want application/yaml", ct)
+	}
+	body := w.Body.String()
+	if body == "" {
+		t.Fatal("empty document body")
+	}
+	if !strings.Contains(body, "openapi: 3.1.0") {
+		t.Errorf("body does not look like an OpenAPI 3.1 document: %.80q", body)
+	}
+}
+
+// TestHandleOpenAPI_MissingFile pins http.ServeFile's toHTTPError behaviour for
+// a StaticDir without the document: a 404, not a 500 or an empty 200.
+func TestHandleOpenAPI_MissingFile(t *testing.T) {
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+
+	srv := New(database, &mockScanner{}, Config{StaticDir: t.TempDir()})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/openapi.yaml", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestOpenAPIDocumentAlsoServedFromStatic notes, rather than blesses, the second
+// URL: the document sits under web/static, so the existing FileServer serves it
+// too. That is harmless — /api/openapi.yaml is the contract.
+func TestOpenAPIDocumentAlsoServedFromStatic(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/static/openapi.yaml", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	if w.Body.Len() == 0 {
+		t.Error("empty document body")
+	}
+}

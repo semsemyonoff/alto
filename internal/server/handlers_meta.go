@@ -3,6 +3,7 @@ package server
 import (
 	"fmt"
 	"net/http"
+	"path/filepath"
 
 	"github.com/semsemyonoff/ALTO/internal/transcode"
 	"github.com/semsemyonoff/ALTO/internal/version"
@@ -99,4 +100,20 @@ func buildPresets() presetsDTO {
 // GET /api/presets
 func (s *Server) handlePresets(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, buildPresets())
+}
+
+// handleOpenAPI serves the hand-written OpenAPI 3.1 document that describes the
+// whole /api/* surface. The file also happens to be reachable at
+// /static/openapi.yaml through the FileServer; this route is the stable,
+// discoverable URL under the API prefix, not a second contract.
+//
+// The Content-Type is set explicitly because serveContent only fills the header
+// in when it is absent, and ".yaml" is not in Go's built-in MIME table — an
+// unset header would be content-sniffed to text/plain, and on Unix the table is
+// additionally augmented from /etc/mime.types, so the default would differ
+// between the dev and runtime images.
+// GET /api/openapi.yaml
+func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/yaml")
+	http.ServeFile(w, r, filepath.Join(s.staticDir, "openapi.yaml"))
 }

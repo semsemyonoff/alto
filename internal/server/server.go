@@ -362,6 +362,7 @@ func (s *Server) routes() []route {
 		{"POST", "/api/jobs/{id}/cancel", s.handleJobCancel},
 		{"POST", "/api/jobs/{id}/remove", s.handleJobRemove},
 		{"GET", "/api/version", s.handleVersion},
+		{"GET", "/api/openapi.yaml", s.handleOpenAPI},
 		{"GET", "/api/presets", s.handlePresets},
 		{"POST", "/api/transcode", s.handleTranscodeStart},
 		{"GET", "/api/transcode/{jobID}/log", s.handleTranscodeLog},
