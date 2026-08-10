@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -424,24 +425,31 @@ func TestJobManager_WorkersExitOnShutdown(t *testing.T) {
 	})
 }
 
-// evict forces id's scheduled 30-min eviction to run immediately, so tests
-// don't have to wait on the real timer.
-func evict(jm *jobManager, id string) {
+// listedJob reports whether id is present in the manager and, if so, whether
+// snapshotJobs still lists it — the two halves of a tombstone.
+func listedJob(jm *jobManager, id string) (present, listed bool) {
 	jm.mu.Lock()
-	delete(jm.jobs, id)
-	for i, oid := range jm.order {
-		if oid == id {
-			jm.order = append(jm.order[:i], jm.order[i+1:]...)
-			break
+	_, present = jm.jobs[id]
+	jm.mu.Unlock()
+	for _, ev := range jm.snapshotJobs() {
+		if ev.ID == id {
+			listed = true
 		}
 	}
-	jm.mu.Unlock()
+	return present, listed
+}
+
+// inOrder reports whether id is still in the manager's registration order.
+func inOrder(jm *jobManager, id string) bool {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	return slices.Contains(jm.order, id)
 }
 
 // TestJobManager_CancelQueued verifies that canceling a queued job marks it
 // canceled without ever running it, that it stays listed (never removed from
-// order) until eviction, and that eviction then removes it from both jobs
-// and order.
+// order) until eviction, and that eviction then only tombstones it — the row
+// survives so GET /api/jobs/{id} keeps reporting the outcome.
 func TestJobManager_CancelQueued(t *testing.T) {
 	block := make(chan struct{})
 	eng := &blockingEngine{block: block}
@@ -485,31 +493,19 @@ func TestJobManager_CancelQueued(t *testing.T) {
 		t.Fatalf("job2 status after job1 completed = %q, want %q (must not run)", got, JobStatusCanceled)
 	}
 
-	jm.mu.Lock()
-	_, stillListed := jm.jobs["job2"]
-	inOrderList := false
-	for _, id := range jm.order {
-		if id == "job2" {
-			inOrderList = true
-		}
-	}
-	jm.mu.Unlock()
-	if !stillListed || !inOrderList {
-		t.Fatalf("canceled queued job2 must stay listed until eviction (jobs present=%v, in order=%v)", stillListed, inOrderList)
+	present, listed := listedJob(jm, "job2")
+	if !present || !listed {
+		t.Fatalf("canceled queued job2 must stay listed until eviction (present=%v, listed=%v)", present, listed)
 	}
 
-	evict(jm, "job2")
-	jm.mu.Lock()
-	_, stillListed = jm.jobs["job2"]
-	inOrderList = false
-	for _, id := range jm.order {
-		if id == "job2" {
-			inOrderList = true
-		}
+	jm.evict("job2")
+	present, listed = listedJob(jm, "job2")
+	if !present || listed {
+		t.Fatalf("evicted job2: present=%v listed=%v, want a tombstone (present, unlisted)", present, listed)
 	}
-	jm.mu.Unlock()
-	if stillListed || inOrderList {
-		t.Fatalf("job2 not removed from both jobs and order after eviction (jobs present=%v, in order=%v)", stillListed, inOrderList)
+	detail, ok := jm.detail("job2")
+	if !ok || detail.Status != JobStatusCanceled || !detail.Evicted {
+		t.Fatalf("detail(job2) = %+v (ok=%v), want a canceled, evicted tombstone", detail, ok)
 	}
 }
 
@@ -709,8 +705,9 @@ func TestJobManager_PctShapingDoneWithoutReport(t *testing.T) {
 }
 
 // TestJobManager_DoneFailedRemainListedUntilEviction verifies that jobs
-// reaching JobStatusDone/JobStatusFailed via complete() stay in both jobs and
-// order until the shared eviction runs, matching the queued-cancel path.
+// reaching JobStatusDone/JobStatusFailed via complete() stay listed until the
+// shared eviction runs, matching the queued-cancel path, and that eviction
+// then leaves a tombstone rather than deleting the row.
 func TestJobManager_DoneFailedRemainListedUntilEviction(t *testing.T) {
 	jm := newJobManager(nil, 0, context.Background())
 
@@ -727,36 +724,24 @@ func TestJobManager_DoneFailedRemainListedUntilEviction(t *testing.T) {
 	jm.complete(jsFailed.id, errors.New("boom"))
 
 	for _, id := range []string{"done1", "failed1"} {
-		jm.mu.Lock()
-		_, present := jm.jobs[id]
-		inOrder := false
-		for _, oid := range jm.order {
-			if oid == id {
-				inOrder = true
-			}
-		}
-		jm.mu.Unlock()
-		if !present || !inOrder {
-			t.Fatalf("%s must stay listed until eviction (jobs present=%v, in order=%v)", id, present, inOrder)
+		present, listed := listedJob(jm, id)
+		if !present || !listed {
+			t.Fatalf("%s must stay listed until eviction (present=%v, listed=%v)", id, present, listed)
 		}
 	}
 
-	evict(jm, "done1")
-	evict(jm, "failed1")
+	jm.evict("done1")
+	jm.evict("failed1")
 
 	for _, id := range []string{"done1", "failed1"} {
-		jm.mu.Lock()
-		_, present := jm.jobs[id]
-		inOrder := false
-		for _, oid := range jm.order {
-			if oid == id {
-				inOrder = true
-			}
+		present, listed := listedJob(jm, id)
+		if !present || listed {
+			t.Fatalf("evicted %s: present=%v listed=%v, want a tombstone (present, unlisted)", id, present, listed)
 		}
-		jm.mu.Unlock()
-		if present || inOrder {
-			t.Fatalf("%s not removed from both jobs and order after eviction (jobs present=%v, in order=%v)", id, present, inOrder)
-		}
+	}
+
+	if detail, ok := jm.detail("failed1"); !ok || detail.Status != JobStatusFailed || detail.Error != "boom" || !detail.Evicted {
+		t.Fatalf("detail(failed1) = %+v (ok=%v), want the failure reason preserved on the tombstone", detail, ok)
 	}
 }
 
@@ -836,5 +821,168 @@ func TestJobManager_DetailUnknownID(t *testing.T) {
 
 	if _, ok := jm.detail("nope"); ok {
 		t.Error("detail(nope) reported found, want a miss")
+	}
+}
+
+// TestJobManager_EvictionKeepsOutcome verifies that every route to a tombstone
+// — the timed eviction of a completed job, of a cancel-while-queued job, and
+// an explicit remove() — keeps the row answerable with its terminal status and
+// evicted: true, while dropping it from the queue list.
+func TestJobManager_EvictionKeepsOutcome(t *testing.T) {
+	cases := []struct {
+		name       string
+		tombstone  func(jm *jobManager, id string)
+		terminate  func(jm *jobManager, id string)
+		wantStatus JobStatus
+	}{
+		{
+			name:       "completed then evicted",
+			terminate:  func(jm *jobManager, id string) { jm.complete(id, nil) },
+			tombstone:  func(jm *jobManager, id string) { jm.evict(id) },
+			wantStatus: JobStatusDone,
+		},
+		{
+			name:       "canceled while queued then evicted",
+			terminate:  func(jm *jobManager, id string) { jm.cancel(id) },
+			tombstone:  func(jm *jobManager, id string) { jm.evict(id) },
+			wantStatus: JobStatusCanceled,
+		},
+		{
+			name:       "removed by the user",
+			terminate:  func(jm *jobManager, id string) { jm.complete(id, nil) },
+			tombstone:  func(jm *jobManager, id string) { jm.remove(id) },
+			wantStatus: JobStatusDone,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			jm := newJobManager(nil, 0, context.Background())
+			if _, started := jm.start("job1", "/dir1", twoFileJob("job1"), jobMeta{title: "t1", sub: "s1"}); !started {
+				t.Fatalf("start: expected success")
+			}
+			tc.terminate(jm, "job1")
+			tc.tombstone(jm, "job1")
+
+			present, listed := listedJob(jm, "job1")
+			if !present || listed {
+				t.Fatalf("present=%v listed=%v, want a tombstone (present, unlisted)", present, listed)
+			}
+			if !inOrder(jm, "job1") {
+				t.Error("job1 dropped from order, want the row kept until the FIFO bound")
+			}
+			detail, ok := jm.detail("job1")
+			if !ok {
+				t.Fatal("detail: tombstone must still answer, not 404")
+			}
+			if detail.Status != tc.wantStatus || !detail.Evicted {
+				t.Errorf("status/evicted = %q/%v, want %q/true", detail.Status, detail.Evicted, tc.wantStatus)
+			}
+			if _, snapshot := jm.subscribeEventsWithSnapshot(); len(snapshot) != 0 {
+				t.Errorf("SSE snapshot = %+v, want no evicted jobs", snapshot)
+			}
+		})
+	}
+}
+
+// TestJobManager_RemoveBroadcastsAndKeepsRow verifies remove() still tells
+// connected queue panels to drop the row, even though the job itself survives
+// as a tombstone.
+func TestJobManager_RemoveBroadcastsAndKeepsRow(t *testing.T) {
+	jm := newJobManager(nil, 0, context.Background())
+
+	if _, started := jm.start("job1", "/dir1", transcode.Job{ID: "job1"}, jobMeta{title: "t1", sub: "s1"}); !started {
+		t.Fatalf("start: expected success")
+	}
+	jm.complete("job1", nil)
+
+	ch, _ := jm.subscribeEventsWithSnapshot()
+	t.Cleanup(func() { jm.unsubscribeEvents(ch) })
+
+	if got := jm.remove("job1"); got != removeResultRemoved {
+		t.Fatalf("remove = %v, want removeResultRemoved", got)
+	}
+
+	select {
+	case ev := <-ch:
+		if ev.ID != "job1" || !ev.Removed {
+			t.Fatalf("event = %+v, want a remove event for job1", ev)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the remove event")
+	}
+
+	if _, ok := jm.detail("job1"); !ok {
+		t.Error("detail(job1) after remove: want the tombstone, got a miss")
+	}
+}
+
+// TestJobManager_EvictedDirAcceptsNewJob verifies the byDir slot a tombstone
+// once held is free: an evicted job must never block a new job for the same
+// directory.
+func TestJobManager_EvictedDirAcceptsNewJob(t *testing.T) {
+	jm := newJobManager(nil, 0, context.Background())
+
+	if _, started := jm.start("job1", "/dir1", transcode.Job{ID: "job1"}, jobMeta{title: "t1", sub: "s1"}); !started {
+		t.Fatalf("start job1: expected success")
+	}
+	jm.complete("job1", nil)
+	jm.evict("job1")
+
+	if _, started := jm.start("job2", "/dir1", transcode.Job{ID: "job2"}, jobMeta{title: "t2", sub: "s2"}); !started {
+		t.Fatal("start job2 on the evicted job's directory: expected success")
+	}
+
+	listedIDs := make([]string, 0, 1)
+	for _, ev := range jm.snapshotJobs() {
+		listedIDs = append(listedIDs, ev.ID)
+	}
+	if !slices.Equal(listedIDs, []string{"job2"}) {
+		t.Errorf("queue lists %v, want only job2", listedIDs)
+	}
+}
+
+// TestJobManager_EvictionFIFOBound verifies tombstones are bounded: once they
+// exceed maxEvictedJobs the oldest are deleted for real, oldest first, while
+// the newest ones and any still-listed job survive.
+func TestJobManager_EvictionFIFOBound(t *testing.T) {
+	jm := newJobManager(nil, 0, context.Background())
+
+	// One live job registered first: it must survive the prune untouched.
+	if _, started := jm.start("live", "/live", transcode.Job{ID: "live"}, jobMeta{}); !started {
+		t.Fatalf("start live: expected success")
+	}
+
+	const overflow = 3
+	total := maxEvictedJobs + overflow
+	for i := range total {
+		id := fmt.Sprintf("job%04d", i)
+		if _, started := jm.start(id, "/dir/"+id, transcode.Job{ID: id}, jobMeta{}); !started {
+			t.Fatalf("start %s: expected success", id)
+		}
+		jm.complete(id, nil)
+		jm.evict(id)
+	}
+
+	for i := range overflow {
+		id := fmt.Sprintf("job%04d", i)
+		if _, ok := jm.detail(id); ok {
+			t.Errorf("%s still tracked, want the oldest tombstones dropped first", id)
+		}
+		if inOrder(jm, id) {
+			t.Errorf("%s still in order, want it dropped alongside its row", id)
+		}
+	}
+	for i := overflow; i < total; i++ {
+		id := fmt.Sprintf("job%04d", i)
+		if _, ok := jm.detail(id); !ok {
+			t.Fatalf("%s dropped, want the newest %d tombstones kept", id, maxEvictedJobs)
+		}
+	}
+	if _, ok := jm.detail("live"); !ok {
+		t.Error("the queued job was dropped by the tombstone prune")
+	}
+	if _, listed := listedJob(jm, "live"); !listed {
+		t.Error("the queued job vanished from the queue list")
 	}
 }

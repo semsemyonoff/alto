@@ -1962,6 +1962,42 @@ func TestHandleJob_Lifecycle(t *testing.T) {
 	}
 }
 
+// TestHandleJob_EvictedStillAnswers pins the tombstone contract at the HTTP
+// layer: a job dropped from the queue keeps reporting its outcome on the
+// detail endpoint, so a poller that arrives late reads the result instead of a
+// 404, while GET /api/jobs no longer lists it.
+func TestHandleJob_EvictedStillAnswers(t *testing.T) {
+	jm := newJobManager(nil, 0, context.Background())
+	srv := &Server{jobs: jm}
+
+	if _, ok := jm.start("job1", "/dir1", twoFileJob("job1"), jobMeta{title: "Album", sub: "flac → opus/Balanced"}); !ok {
+		t.Fatalf("start: expected success")
+	}
+	jm.complete("job1", errors.New("ffmpeg exited 1"))
+	jm.evict("job1")
+
+	got := decodeJobDetail(t, getJobDetail(t, srv, "job1"))
+	if got.Status != JobStatusFailed || got.Error != "ffmpeg exited 1" {
+		t.Errorf("status/error = %q/%q, want the terminal outcome preserved", got.Status, got.Error)
+	}
+	if !got.Evicted {
+		t.Error("evicted = false, want true for a job dropped from the queue")
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/jobs", nil)
+	w := httptest.NewRecorder()
+	srv.handleJobs(w, req)
+	var resp struct {
+		Jobs []jobEvent `json:"jobs"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Jobs) != 0 {
+		t.Errorf("GET /api/jobs = %+v, want the evicted job absent", resp.Jobs)
+	}
+}
+
 func TestHandleJob_NotFound(t *testing.T) {
 	srv := &Server{jobs: newJobManager(nil, 0, context.Background())}
 

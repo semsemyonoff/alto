@@ -319,14 +319,16 @@ func (jm *jobManager) broadcastEvent(ev jobEvent) {
 	jm.broadcastEventLocked(ev)
 }
 
-// snapshotJobs returns the current jobEvent for every job in order, in the
-// same order — the shape used by GET /api/jobs.
+// snapshotJobs returns the current jobEvent for every listed job in
+// registration order — the shape used by GET /api/jobs. Evicted jobs are
+// tombstones: they keep answering GET /api/jobs/{id} but are gone from the
+// queue list, so the panel does not grow without bound.
 func (jm *jobManager) snapshotJobs() []jobEvent {
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
 	out := make([]jobEvent, 0, len(jm.order))
 	for _, id := range jm.order {
-		if js, ok := jm.jobs[id]; ok {
+		if js, ok := jm.jobs[id]; ok && !js.evicted {
 			out = append(out, jm.eventForLocked(js))
 		}
 	}
@@ -345,7 +347,7 @@ func (jm *jobManager) subscribeEventsWithSnapshot() (chan jobEvent, []jobEvent) 
 	jm.eventSubs[ch] = struct{}{}
 	snapshot := make([]jobEvent, 0, len(jm.order))
 	for _, id := range jm.order {
-		if js, ok := jm.jobs[id]; ok {
+		if js, ok := jm.jobs[id]; ok && !js.evicted {
 			snapshot = append(snapshot, jm.eventForLocked(js))
 		}
 	}
@@ -598,13 +600,14 @@ const (
 	removeResultActive
 )
 
-// remove drops a terminal (done/failed/canceled) job from the jobs map and the
-// order list immediately, instead of waiting for its 30-minute eviction, and
-// broadcasts a `remove` event so connected queue panels drop the row. A queued
-// or running job is left untouched and reported as removeResultActive (it must
-// be canceled first); an unknown id reports removeResultNotFound. Removing a
-// job whose eviction timer is still pending is safe — the later AfterFunc just
-// finds nothing to delete.
+// remove drops a terminal (done/failed/canceled) job from the queue list
+// immediately, instead of waiting for its 30-minute eviction, and broadcasts a
+// `remove` event so connected queue panels drop the row. Like the timed
+// eviction it leaves a tombstone, so a client that still holds the job id
+// reads its outcome instead of a 404. A queued or running job is left
+// untouched and reported as removeResultActive (it must be canceled first); an
+// unknown id reports removeResultNotFound. Removing a job whose eviction timer
+// is still pending is safe — the later AfterFunc just re-marks it.
 func (jm *jobManager) remove(id string) removeResult {
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
@@ -616,33 +619,62 @@ func (jm *jobManager) remove(id string) removeResult {
 	case JobStatusQueued, JobStatusRunning:
 		return removeResultActive
 	}
-	delete(jm.jobs, id)
-	for i, oid := range jm.order {
-		if oid == id {
-			jm.order = append(jm.order[:i], jm.order[i+1:]...)
-			break
-		}
-	}
+	js.evicted = true
 	jm.broadcastEventLocked(jobEvent{ID: id, Removed: true})
+	jm.pruneEvictedLocked()
 	return removeResultRemoved
 }
 
-// scheduleEviction removes id from both jobs and order 30 minutes after it
-// reaches a terminal state, keeping it briefly visible to status/log queries
-// while bounding long-run memory growth. Shared by complete() and the
-// queued path of cancel().
+// maxEvictedJobs bounds how many tombstones the manager keeps. Beyond it the
+// oldest are deleted for real — the only path that drops a job row and the
+// only way GET /api/jobs/{id} can answer job_not_found for an id that once
+// existed.
+const maxEvictedJobs = 256
+
+// scheduleEviction tombstones id 30 minutes after it reaches a terminal state:
+// the job leaves the queue list but keeps answering GET /api/jobs/{id} with
+// its outcome, so a slow poller reads the real result instead of a 404. Shared
+// by complete() and the queued path of cancel().
 func (jm *jobManager) scheduleEviction(id string) {
-	time.AfterFunc(30*time.Minute, func() {
-		jm.mu.Lock()
-		delete(jm.jobs, id)
-		for i, oid := range jm.order {
-			if oid == id {
-				jm.order = append(jm.order[:i], jm.order[i+1:]...)
-				break
-			}
+	time.AfterFunc(30*time.Minute, func() { jm.evict(id) })
+}
+
+// evict marks id as no longer part of the queue list, keeping its row for the
+// detail endpoint, and enforces the tombstone bound.
+func (jm *jobManager) evict(id string) {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	js, ok := jm.jobs[id]
+	if !ok {
+		return
+	}
+	js.evicted = true
+	jm.pruneEvictedLocked()
+}
+
+// pruneEvictedLocked deletes the oldest tombstones once they exceed
+// maxEvictedJobs, in registration order. Callers must hold jm.mu.
+func (jm *jobManager) pruneEvictedLocked() {
+	evicted := 0
+	for _, id := range jm.order {
+		if js, ok := jm.jobs[id]; ok && js.evicted {
+			evicted++
 		}
-		jm.mu.Unlock()
-	})
+	}
+	drop := evicted - maxEvictedJobs
+	if drop <= 0 {
+		return
+	}
+	kept := jm.order[:0]
+	for _, id := range jm.order {
+		if js, ok := jm.jobs[id]; ok && js.evicted && drop > 0 {
+			delete(jm.jobs, id)
+			drop--
+			continue
+		}
+		kept = append(kept, id)
+	}
+	jm.order = kept
 }
 
 // get returns the jobState for a given ID, or false if not found.
