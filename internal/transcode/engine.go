@@ -128,9 +128,9 @@ func calcOutputDir(job Job) (string, error) {
 	}
 }
 
-// outFilename returns the output filename for a given input filename, with the
+// OutFilename returns the output filename for a given input filename, with the
 // file extension changed to match the target codec.
-func outFilename(name string, codec Codec) string {
+func OutFilename(name string, codec Codec) string {
 	ext := filepath.Ext(name)
 	base := strings.TrimSuffix(name, ext)
 	switch codec {
@@ -155,7 +155,7 @@ func (e *Engine) transcodeToDir(ctx context.Context, job Job, outDir string, pro
 		default:
 		}
 		inPath := filepath.Join(job.SourceDir, fi.Name)
-		outPath := filepath.Join(outDir, outFilename(fi.Name, job.Preset.Codec))
+		outPath := filepath.Join(outDir, OutFilename(fi.Name, job.Preset.Codec))
 		args := buildArgs(e.ffmpegBin, inPath, outPath, job.Preset)
 		slog.Info("transcoding file", "file", fi.Name, "output", outPath)
 		if err := e.ffmpegRun(ctx, args, makeProgressFn(fi, i, len(job.Files), progress)); err != nil {
@@ -240,7 +240,7 @@ func (e *Engine) transcodeReplace(ctx context.Context, job Job, progress chan<- 
 		}
 
 		inPath := filepath.Join(sourceDir, fi.Name)
-		outName := outFilename(fi.Name, job.Preset.Codec)
+		outName := OutFilename(fi.Name, job.Preset.Codec)
 		tmpPath := filepath.Join(tmpDir, outName)
 
 		args := buildArgs(e.ffmpegBin, inPath, tmpPath, job.Preset)

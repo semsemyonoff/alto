@@ -2,9 +2,11 @@ package server
 
 import (
 	"errors"
+	"sort"
 	"strings"
 
 	"github.com/semsemyonoff/ALTO/internal/db"
+	"github.com/semsemyonoff/ALTO/internal/transcode"
 )
 
 // skippedDTO describes a track that was excluded from a transcode job.
@@ -126,6 +128,42 @@ func validateFileNames(names []string, tracks []db.Track) ([]db.Track, error) {
 		}
 	}
 	return selected, nil
+}
+
+// outputConflictDTO reports several sources that would render to the same
+// output file name.
+type outputConflictDTO struct {
+	Output  string   `json:"output"`
+	Sources []string `json:"sources"`
+}
+
+// detectOutputConflicts finds selected tracks that collapse onto a single
+// output name once their extension is rewritten for the target codec — e.g.
+// "01 A.ape" and "01 A.flac" both rendering to "01 A.flac". ffmpeg runs with
+// -y, so without this check the second source silently overwrites the first
+// and the job reports done having produced one file instead of two.
+//
+// Conflicts come back sorted by output name, and their sources in directory
+// order, so the error body is stable.
+func detectOutputConflicts(selected []db.Track, codec transcode.Codec) []outputConflictDTO {
+	sources := make(map[string][]string, len(selected))
+	var order []string
+	for _, t := range selected {
+		out := transcode.OutFilename(t.Filename, codec)
+		if _, seen := sources[out]; !seen {
+			order = append(order, out)
+		}
+		sources[out] = append(sources[out], t.Filename)
+	}
+
+	var conflicts []outputConflictDTO
+	for _, out := range order {
+		if len(sources[out]) > 1 {
+			conflicts = append(conflicts, outputConflictDTO{Output: out, Sources: sources[out]})
+		}
+	}
+	sort.Slice(conflicts, func(i, j int) bool { return conflicts[i].Output < conflicts[j].Output })
+	return conflicts
 }
 
 // skippedReport lists the tracks of all that are absent from selected, in the

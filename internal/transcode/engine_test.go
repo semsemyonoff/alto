@@ -182,9 +182,9 @@ func TestOutFilename(t *testing.T) {
 		{"track.aac", CodecOpus, "track.opus"},
 	}
 	for _, tc := range tests {
-		got := outFilename(tc.name, tc.codec)
+		got := OutFilename(tc.name, tc.codec)
 		if got != tc.want {
-			t.Errorf("outFilename(%q, %s) = %q, want %q", tc.name, tc.codec, got, tc.want)
+			t.Errorf("OutFilename(%q, %s) = %q, want %q", tc.name, tc.codec, got, tc.want)
 		}
 	}
 }

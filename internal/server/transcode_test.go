@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -80,6 +82,354 @@ func newTestServerWithEngine(t *testing.T, eng TranscodeEngine) (*Server, *db.DB
 	srv := NewWithEngine(database, &mockScanner{}, eng, cfg)
 	t.Cleanup(srv.Shutdown)
 	return srv, database, libDir, libDir + "/album1"
+}
+
+// newTestServerWithDirTracks builds a test server whose seeded "album1"
+// directory holds exactly the given tracks, so a test can describe any
+// lossless/lossy mix it needs. Returns the server and the absolute directory path.
+func newTestServerWithDirTracks(t *testing.T, eng TranscodeEngine, tracks []db.Track) (*Server, string) {
+	t.Helper()
+
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+
+	libDir := t.TempDir()
+	libID, err := database.UpsertLibrary("TestLib", libDir)
+	if err != nil {
+		t.Fatalf("UpsertLibrary: %v", err)
+	}
+
+	albumDir := filepath.Join(libDir, "album1")
+	if err := os.MkdirAll(albumDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	dirID, err := database.UpsertDirectory(libID, "album1", "MIXED", false, "")
+	if err != nil {
+		t.Fatalf("UpsertDirectory: %v", err)
+	}
+	for _, tr := range tracks {
+		tr.DirectoryID = dirID
+		if tr.Duration == 0 {
+			tr.Duration = 10
+		}
+		if tr.Size == 0 {
+			tr.Size = 1000
+		}
+		if err := database.UpsertTrack(tr); err != nil {
+			t.Fatalf("UpsertTrack %q: %v", tr.Filename, err)
+		}
+	}
+
+	cfg := Config{
+		Libraries: []LibraryConfig{{ID: libID, Name: "TestLib", Path: libDir}},
+		OutputDir: t.TempDir(),
+	}
+	srv := NewWithEngine(database, &mockScanner{}, eng, cfg)
+	t.Cleanup(srv.Shutdown)
+	return srv, albumDir
+}
+
+// postTranscode posts body to handleTranscodeStart and returns the recorder.
+func postTranscode(t *testing.T, srv *Server, body map[string]any) *httptest.ResponseRecorder {
+	t.Helper()
+	b, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/transcode", bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.handleTranscodeStart(w, req)
+	return w
+}
+
+// errorCode reads the "code" field of an API error envelope.
+func errorCode(t *testing.T, w *httptest.ResponseRecorder) string {
+	t.Helper()
+	var resp struct {
+		Error string `json:"error"`
+		Code  string `json:"code"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode error body %q: %v", w.Body.String(), err)
+	}
+	return resp.Code
+}
+
+// jobFileNames returns the file names the started job was built with.
+func jobFileNames(t *testing.T, srv *Server, jobID string) []string {
+	t.Helper()
+	js, ok := srv.jobs.get(jobID)
+	if !ok {
+		t.Fatalf("job %q not found", jobID)
+	}
+	srv.jobs.mu.Lock()
+	defer srv.jobs.mu.Unlock()
+	names := make([]string, 0, len(js.job.Files))
+	for _, f := range js.job.Files {
+		names = append(names, f.Name)
+	}
+	return names
+}
+
+var (
+	flacTracks  = []db.Track{{Filename: "01.flac", Codec: "flac"}, {Filename: "02.flac", Codec: "flac"}}
+	mixedTracks = []db.Track{
+		{Filename: "01.flac", Codec: "flac"},
+		{Filename: "02.mp3", Codec: "mp3"},
+		{Filename: "03.flac", Codec: "flac"},
+	}
+	lossyTracks = []db.Track{{Filename: "01.mp3", Codec: "mp3"}, {Filename: "02.mp3", Codec: "mp3"}}
+)
+
+// TestHandleTranscodeStart_SelectionMatrix walks every row of the plan's
+// selection matrix, asserting the machine-readable code rather than the message.
+func TestHandleTranscodeStart_SelectionMatrix(t *testing.T) {
+	cases := []struct {
+		name       string
+		tracks     []db.Track
+		extra      map[string]any
+		wantStatus int
+		wantCode   string
+		wantFiles  []string
+	}{
+		{
+			name:       "no selection, all lossless",
+			tracks:     flacTracks,
+			wantStatus: http.StatusAccepted,
+			wantFiles:  []string{"01.flac", "02.flac"},
+		},
+		{
+			name:       "no selection, mixed",
+			tracks:     mixedTracks,
+			wantStatus: http.StatusUnprocessableEntity,
+			wantCode:   codeMixedDirectory,
+		},
+		{
+			name:       "skip_lossy, all lossless",
+			tracks:     flacTracks,
+			extra:      map[string]any{"skip_lossy": true},
+			wantStatus: http.StatusAccepted,
+			wantFiles:  []string{"01.flac", "02.flac"},
+		},
+		{
+			name:       "skip_lossy, mixed",
+			tracks:     mixedTracks,
+			extra:      map[string]any{"skip_lossy": true},
+			wantStatus: http.StatusAccepted,
+			wantFiles:  []string{"01.flac", "03.flac"},
+		},
+		{
+			name:       "skip_lossy, all lossy",
+			tracks:     lossyTracks,
+			extra:      map[string]any{"skip_lossy": true},
+			wantStatus: http.StatusUnprocessableEntity,
+			wantCode:   codeNoLosslessTracks,
+		},
+		{
+			name:       "files narrows a mixed directory",
+			tracks:     mixedTracks,
+			extra:      map[string]any{"files": []string{"03.flac"}},
+			wantStatus: http.StatusAccepted,
+			wantFiles:  []string{"03.flac"},
+		},
+		{
+			name:       "both selections present",
+			tracks:     mixedTracks,
+			extra:      map[string]any{"skip_lossy": true, "files": []string{"01.flac"}},
+			wantStatus: http.StatusBadRequest,
+			wantCode:   codeInvalidRequest,
+		},
+		{
+			name:       "empty files list",
+			tracks:     flacTracks,
+			extra:      map[string]any{"files": []string{}},
+			wantStatus: http.StatusBadRequest,
+			wantCode:   codeInvalidRequest,
+		},
+		{
+			name:       "files naming an unindexed track",
+			tracks:     flacTracks,
+			extra:      map[string]any{"files": []string{"99.flac"}},
+			wantStatus: http.StatusUnprocessableEntity,
+			wantCode:   codeUnknownFile,
+		},
+		{
+			name:       "files naming a lossy track",
+			tracks:     mixedTracks,
+			extra:      map[string]any{"files": []string{"02.mp3"}},
+			wantStatus: http.StatusUnprocessableEntity,
+			wantCode:   codeLossySourceSelected,
+		},
+		{
+			name:       "files carrying a path separator",
+			tracks:     flacTracks,
+			extra:      map[string]any{"files": []string{"../01.flac"}},
+			wantStatus: http.StatusBadRequest,
+			wantCode:   codeInvalidRequest,
+		},
+		{
+			name:       "files carrying a duplicate",
+			tracks:     flacTracks,
+			extra:      map[string]any{"files": []string{"01.flac", "01.flac"}},
+			wantStatus: http.StatusBadRequest,
+			wantCode:   codeInvalidRequest,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, dirPath := newTestServerWithDirTracks(t, &mockEngine{}, tc.tracks)
+
+			body := map[string]any{"path": dirPath, "preset": "Balanced", "output_mode": "shared"}
+			maps.Copy(body, tc.extra)
+			w := postTranscode(t, srv, body)
+
+			if w.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d: %s", w.Code, tc.wantStatus, w.Body.String())
+			}
+			if tc.wantCode != "" {
+				if got := errorCode(t, w); got != tc.wantCode {
+					t.Fatalf("code = %q, want %q: %s", got, tc.wantCode, w.Body.String())
+				}
+				return
+			}
+
+			var resp map[string]any
+			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+				t.Fatal(err)
+			}
+			jobID, _ := resp["job_id"].(string)
+			if jobID == "" {
+				t.Fatalf("expected job_id, got %s", w.Body.String())
+			}
+			got := jobFileNames(t, srv, jobID)
+			if strings.Join(got, ",") != strings.Join(tc.wantFiles, ",") {
+				t.Errorf("job files = %v, want %v", got, tc.wantFiles)
+			}
+		})
+	}
+}
+
+// TestHandleTranscodeStart_FilesNilVsEmpty pins the nil-vs-empty distinction:
+// an absent "files" key falls through to the all-or-nothing gate, while a
+// present-but-empty one is a bad request — testing length instead of presence
+// would collapse the two.
+func TestHandleTranscodeStart_FilesNilVsEmpty(t *testing.T) {
+	t.Run("absent files on a mixed directory hits the gate", func(t *testing.T) {
+		srv, dirPath := newTestServerWithDirTracks(t, &mockEngine{}, mixedTracks)
+		w := postTranscode(t, srv, map[string]any{"path": dirPath, "preset": "Balanced"})
+		if w.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("status = %d, want 422: %s", w.Code, w.Body.String())
+		}
+		if got := errorCode(t, w); got != codeMixedDirectory {
+			t.Errorf("code = %q, want %q", got, codeMixedDirectory)
+		}
+	})
+
+	t.Run("empty files is rejected, not treated as absent", func(t *testing.T) {
+		srv, dirPath := newTestServerWithDirTracks(t, &mockEngine{}, flacTracks)
+		w := postTranscode(t, srv, map[string]any{"path": dirPath, "preset": "Balanced", "files": []string{}})
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400: %s", w.Code, w.Body.String())
+		}
+		if got := errorCode(t, w); got != codeInvalidRequest {
+			t.Errorf("code = %q, want %q", got, codeInvalidRequest)
+		}
+	})
+
+	t.Run("empty files together with skip_lossy is still rejected", func(t *testing.T) {
+		srv, dirPath := newTestServerWithDirTracks(t, &mockEngine{}, mixedTracks)
+		w := postTranscode(t, srv, map[string]any{
+			"path": dirPath, "preset": "Balanced", "skip_lossy": true, "files": []string{},
+		})
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400: %s", w.Code, w.Body.String())
+		}
+		if got := errorCode(t, w); got != codeInvalidRequest {
+			t.Errorf("code = %q, want %q", got, codeInvalidRequest)
+		}
+	})
+}
+
+// TestHandleTranscodeStart_OutputNameConflict covers the pre-existing defect:
+// an all-lossless directory holding "01 A.ape" and "01 A.flac" passes the
+// all-or-nothing gate untouched, and both sources render to "01 A.flac" — with
+// ffmpeg's -y the second silently overwrote the first.
+func TestHandleTranscodeStart_OutputNameConflict(t *testing.T) {
+	tracks := []db.Track{
+		{Filename: "01 A.ape", Codec: "ape"},
+		{Filename: "01 A.flac", Codec: "flac"},
+		{Filename: "02 B.flac", Codec: "flac"},
+	}
+
+	t.Run("no selection at all", func(t *testing.T) {
+		srv, dirPath := newTestServerWithDirTracks(t, &mockEngine{}, tracks)
+		w := postTranscode(t, srv, map[string]any{"path": dirPath, "preset": "Balanced"})
+		if w.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("status = %d, want 422: %s", w.Code, w.Body.String())
+		}
+		if got := errorCode(t, w); got != codeOutputNameConflict {
+			t.Fatalf("code = %q, want %q", got, codeOutputNameConflict)
+		}
+
+		var resp struct {
+			Conflicts []outputConflictDTO `json:"conflicts"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatal(err)
+		}
+		if len(resp.Conflicts) != 1 || resp.Conflicts[0].Output != "01 A.flac" {
+			t.Fatalf("conflicts = %+v, want one on %q", resp.Conflicts, "01 A.flac")
+		}
+		if strings.Join(resp.Conflicts[0].Sources, ",") != "01 A.ape,01 A.flac" {
+			t.Errorf("sources = %v", resp.Conflicts[0].Sources)
+		}
+	})
+
+	t.Run("selection that avoids the collision starts", func(t *testing.T) {
+		srv, dirPath := newTestServerWithDirTracks(t, &mockEngine{}, tracks)
+		w := postTranscode(t, srv, map[string]any{
+			"path": dirPath, "preset": "Balanced", "files": []string{"01 A.flac", "02 B.flac"},
+		})
+		if w.Code != http.StatusAccepted {
+			t.Fatalf("status = %d, want 202: %s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("no conflict when the target codec keeps the names distinct", func(t *testing.T) {
+		srv, dirPath := newTestServerWithDirTracks(t, &mockEngine{}, []db.Track{
+			{Filename: "01 A.flac", Codec: "flac"},
+			{Filename: "02 B.flac", Codec: "flac"},
+		})
+		w := postTranscode(t, srv, map[string]any{"path": dirPath, "preset": "Balanced"})
+		if w.Code != http.StatusAccepted {
+			t.Fatalf("status = %d, want 202: %s", w.Code, w.Body.String())
+		}
+	})
+}
+
+// TestHandleTranscodeStart_NoSelectionUnchanged pins the default path: an
+// all-lossless directory with no selection still transcodes every track.
+func TestHandleTranscodeStart_NoSelectionUnchanged(t *testing.T) {
+	srv, dirPath := newTestServerWithDirTracks(t, &mockEngine{}, flacTracks)
+
+	w := postTranscode(t, srv, map[string]any{"path": dirPath, "preset": "Balanced", "output_mode": "shared"})
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	jobID, _ := resp["job_id"].(string)
+	if got := jobFileNames(t, srv, jobID); strings.Join(got, ",") != "01.flac,02.flac" {
+		t.Errorf("job files = %v, want both tracks", got)
+	}
 }
 
 // --- POST /api/transcode ---

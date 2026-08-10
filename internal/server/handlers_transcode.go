@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"path/filepath"
@@ -27,6 +28,14 @@ type transcodeRequest struct {
 	Bitrate          string `json:"bitrate,omitempty"`
 	CopyMetadata     *bool  `json:"copy_metadata,omitempty"`
 	CopyCover        *bool  `json:"copy_cover,omitempty"`
+
+	// Track selection. SkipLossy is server-side sugar over Files for the common
+	// mixed-album case; the two are mutually exclusive. Files presence is
+	// tested as `!= nil`, not by length: JSON decoding yields nil for an absent
+	// key and an empty non-nil slice for [], and the two mean different things.
+	SkipLossy   bool     `json:"skip_lossy,omitempty"`
+	Files       []string `json:"files,omitempty"`
+	CopySkipped bool     `json:"copy_skipped,omitempty"`
 }
 
 // handleTranscodeStart handles POST /api/transcode.
@@ -46,6 +55,17 @@ func (s *Server) handleTranscodeStart(w http.ResponseWriter, r *http.Request) {
 
 	if req.Path == "" {
 		http.Error(w, "path required", http.StatusBadRequest)
+		return
+	}
+
+	if req.SkipLossy && req.Files != nil {
+		writeAPIError(w, http.StatusBadRequest, codeInvalidRequest,
+			`"skip_lossy" and "files" are mutually exclusive`, nil)
+		return
+	}
+	if req.Files != nil && len(req.Files) == 0 {
+		writeAPIError(w, http.StatusBadRequest, codeInvalidRequest,
+			`"files" must not be empty; omit it to transcode the whole directory`, nil)
 		return
 	}
 
@@ -81,9 +101,31 @@ func (s *Server) handleTranscodeStart(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no tracks found in directory", http.StatusUnprocessableEntity)
 		return
 	}
-	if !canTranscodeTracks(tracks) {
-		http.Error(w, "transcoding is available only for directories with lossless tracks", http.StatusUnprocessableEntity)
-		return
+	// Resolve the selection. Without one, the all-or-nothing gate still applies:
+	// a mixed directory is refused rather than silently narrowed.
+	selected := tracks
+	switch {
+	case req.SkipLossy:
+		lossless, _ := partitionByLossless(tracks)
+		if len(lossless) == 0 {
+			writeAPIError(w, http.StatusUnprocessableEntity, codeNoLosslessTracks,
+				"directory has no lossless tracks", nil)
+			return
+		}
+		selected = lossless
+	case req.Files != nil:
+		sel, err := validateFileNames(req.Files, tracks)
+		if err != nil {
+			writeSelectionError(w, err)
+			return
+		}
+		selected = sel
+	default:
+		if !canTranscodeTracks(tracks) {
+			writeAPIError(w, http.StatusUnprocessableEntity, codeMixedDirectory,
+				"transcoding is available only for directories with lossless tracks", nil)
+			return
+		}
 	}
 
 	preset, err := resolvePreset(req)
@@ -98,8 +140,18 @@ func (s *Server) handleTranscodeStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	files := make([]transcode.FileInfo, len(tracks))
-	for i, t := range tracks {
+	// Distinct sources can collapse onto one output name once the extension is
+	// rewritten ("01 A.ape" and "01 A.flac" both render to "01 A.flac"), and
+	// ffmpeg runs with -y — so refuse before anything is written.
+	if conflicts := detectOutputConflicts(selected, preset.Codec); len(conflicts) > 0 {
+		writeAPIError(w, http.StatusUnprocessableEntity, codeOutputNameConflict,
+			"several selected files would produce the same output file name",
+			map[string]any{"conflicts": conflicts})
+		return
+	}
+
+	files := make([]transcode.FileInfo, len(selected))
+	for i, t := range selected {
 		files[i] = transcode.FileInfo{
 			Name:     t.Filename,
 			Duration: t.Duration,
@@ -162,6 +214,29 @@ func (s *Server) handleTranscodeStart(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusAccepted, map[string]string{"job_id": id})
+}
+
+// writeSelectionError maps a validateFileNames sentinel to its API error code,
+// carrying the offending names as context so a client can fix its request
+// without parsing the message.
+func writeSelectionError(w http.ResponseWriter, err error) {
+	names := offendingNames(err)
+	switch {
+	case errors.Is(err, errFileSeparator):
+		writeAPIError(w, http.StatusBadRequest, codeInvalidRequest, err.Error(),
+			map[string]any{"invalid": names})
+	case errors.Is(err, errFileDuplicate):
+		writeAPIError(w, http.StatusBadRequest, codeInvalidRequest, err.Error(),
+			map[string]any{"duplicate": names})
+	case errors.Is(err, errFileUnknown):
+		writeAPIError(w, http.StatusUnprocessableEntity, codeUnknownFile, err.Error(),
+			map[string]any{"unknown": names})
+	case errors.Is(err, errFileLossy):
+		writeAPIError(w, http.StatusUnprocessableEntity, codeLossySourceSelected, err.Error(),
+			map[string]any{"lossy": names})
+	default:
+		writeAPIError(w, http.StatusInternalServerError, codeInternalError, "internal error", nil)
+	}
 }
 
 // handleJobs returns every job currently tracked (queued, running, or
