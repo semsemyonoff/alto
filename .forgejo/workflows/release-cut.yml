@@ -117,7 +117,7 @@ jobs:
         run: |
           set -euo pipefail
           new="${{ steps.ver.outputs.version }}"
-          git add VERSION CHANGELOG.md
+          git add VERSION CHANGELOG.md web/static/openapi.yaml
           git commit -m "release: ${new}"
           git tag -a "v${new}" -m "ALTO ${new}"
           git push origin "HEAD:${{ github.ref_name }}"
