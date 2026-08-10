@@ -23,11 +23,16 @@ type mockScanner struct {
 	block chan struct{}
 	// err is the error ScanAll returns after unblocking.
 	err error
+	// scanAll, when set, replaces the whole default ScanAll body.
+	scanAll func(context.Context, []db.Library, func(libraryID int64, discoveredDirs int)) error
+	// scanDir, when set, replaces the default no-op ScanDir body.
+	scanDir func(context.Context, db.Library, string) error
 }
 
-type scannerFunc func(context.Context, []db.Library, func(libraryID int64, discoveredDirs int)) error
-
-func (m *mockScanner) ScanAll(_ context.Context, _ []db.Library, progress func(libraryID int64, discoveredDirs int)) error {
+func (m *mockScanner) ScanAll(ctx context.Context, libraries []db.Library, progress func(libraryID int64, discoveredDirs int)) error {
+	if m.scanAll != nil {
+		return m.scanAll(ctx, libraries, progress)
+	}
 	if m.block != nil {
 		<-m.block
 	}
@@ -37,8 +42,11 @@ func (m *mockScanner) ScanAll(_ context.Context, _ []db.Library, progress func(l
 	return m.err
 }
 
-func (f scannerFunc) ScanAll(ctx context.Context, libraries []db.Library, progress func(libraryID int64, discoveredDirs int)) error {
-	return f(ctx, libraries, progress)
+func (m *mockScanner) ScanDir(ctx context.Context, lib db.Library, relPath string) error {
+	if m.scanDir != nil {
+		return m.scanDir(ctx, lib, relPath)
+	}
+	return nil
 }
 
 // newTestServer creates a Server backed by an in-memory SQLite DB and a mock scanner.
@@ -750,12 +758,12 @@ func TestHandleScanStatus_EmitsProgress(t *testing.T) {
 	libID, _ := database.UpsertLibrary("Lib", libDir)
 
 	block := make(chan struct{})
-	scanner := scannerFunc(func(_ context.Context, libs []db.Library, progress func(libraryID int64, discoveredDirs int)) error {
+	scanner := &mockScanner{scanAll: func(_ context.Context, libs []db.Library, progress func(libraryID int64, discoveredDirs int)) error {
 		<-block
 		progress(libs[0].ID, 1)
 		progress(libs[0].ID, 2)
 		return nil
-	})
+	}}
 
 	cfg := Config{Libraries: []LibraryConfig{{ID: libID, Name: "Lib", Path: libDir}}}
 	srv := New(database, scanner, cfg)
@@ -812,13 +820,13 @@ func TestHandleScanStatus_CompleteIncludesSummary(t *testing.T) {
 	}
 
 	block := make(chan struct{})
-	scanner := scannerFunc(func(_ context.Context, _ []db.Library, _ func(libraryID int64, discoveredDirs int)) error {
+	scanner := &mockScanner{scanAll: func(_ context.Context, _ []db.Library, _ func(libraryID int64, discoveredDirs int)) error {
 		<-block
 		if _, err := database.UpsertDirectory(libID, "New Album", "FLAC", false, ""); err != nil {
 			return err
 		}
 		return database.DeleteStaleDirectories(libID, []string{"New Album"})
-	})
+	}}
 
 	cfg := Config{
 		Libraries: []LibraryConfig{{ID: libID, Name: "Lib", Path: libDir}},

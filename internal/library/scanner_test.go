@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -2263,4 +2264,381 @@ func TestTracksMatchCache(t *testing.T) {
 			t.Error("tracksMatchCache(nil, nil) = false, want true")
 		}
 	})
+}
+
+// --- ScanDir ---
+
+// scanDirFixture builds a library tree with a scanner over it and returns the
+// scanner, the database, the library and the root path.
+func scanDirFixture(t *testing.T, dirs map[string][]string, prober Prober, cfg ScanConfig) (*Scanner, *db.DB, db.Library, string) {
+	t.Helper()
+	root := makeTestTree(t, dirs)
+	database := openTestDB(t)
+	libID, err := database.UpsertLibrary("test", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.CacheDir == "" {
+		cfg.CacheDir = t.TempDir()
+	}
+	return NewScanner(database, prober, cfg), database, db.Library{ID: libID, Name: "test", Path: root}, root
+}
+
+func TestScanDirIndexesFreshDirectory(t *testing.T) {
+	s, database, lib, _ := scanDirFixture(t, map[string][]string{
+		"Artist/Album": {"01.flac", "02.flac", "cover.jpg", "notes.txt"},
+	}, &mockProber{}, ScanConfig{})
+
+	if err := s.ScanDir(context.Background(), lib, "Artist/Album"); err != nil {
+		t.Fatalf("ScanDir: %v", err)
+	}
+
+	dir, err := database.GetDirectoryByPath(lib.ID, "Artist/Album")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dir == nil {
+		t.Fatal("directory not indexed")
+	}
+	if !dir.IsAudio {
+		t.Error("IsAudio: got false, want true")
+	}
+	if dir.CodecSummary != "FLAC" {
+		t.Errorf("CodecSummary: got %q want %q", dir.CodecSummary, "FLAC")
+	}
+	if !dir.HasCover {
+		t.Error("HasCover: got false, want true")
+	}
+
+	tracks := tracksByName(t, database, lib.ID, "Artist/Album")
+	if len(tracks) != 2 {
+		t.Fatalf("expected 2 tracks, got %d: %v", len(tracks), tracks)
+	}
+	for name, tr := range tracks {
+		if tr.Codec != "flac" {
+			t.Errorf("%s: codec got %q want %q", name, tr.Codec, "flac")
+		}
+		if tr.MTime == 0 {
+			t.Errorf("%s: MTime not stored after a successful probe", name)
+		}
+	}
+}
+
+func TestScanDirCreatesAncestorRows(t *testing.T) {
+	s, database, lib, _ := scanDirFixture(t, map[string][]string{
+		"Artists/Live/Bootlegs/1994": {"01.flac"},
+	}, &mockProber{}, ScanConfig{})
+
+	if err := s.ScanDir(context.Background(), lib, "Artists/Live/Bootlegs/1994"); err != nil {
+		t.Fatalf("ScanDir: %v", err)
+	}
+
+	dirs, err := database.GetDirectoryTree(lib.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make([]string, len(dirs))
+	for i, d := range dirs {
+		got[i] = d.Path
+	}
+	want := []string{"Artists", "Artists/Live", "Artists/Live/Bootlegs", "Artists/Live/Bootlegs/1994"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("tree paths: got %v want %v", got, want)
+	}
+	for _, d := range dirs[:len(dirs)-1] {
+		if d.IsAudio {
+			t.Errorf("%s: IsAudio true, want false for a structural parent", d.Path)
+		}
+	}
+	if !dirs[len(dirs)-1].IsAudio {
+		t.Error("leaf directory: IsAudio false, want true")
+	}
+}
+
+func TestScanDirDoesNotClobberIndexedAncestor(t *testing.T) {
+	prober := &mockProber{}
+	s, database, lib, _ := scanDirFixture(t, map[string][]string{
+		"Album":     {"01.flac"},
+		"Album/CD2": {"02.flac"},
+	}, prober, ScanConfig{})
+
+	if err := s.ScanDir(context.Background(), lib, "Album"); err != nil {
+		t.Fatalf("ScanDir Album: %v", err)
+	}
+	if err := s.ScanDir(context.Background(), lib, "Album/CD2"); err != nil {
+		t.Fatalf("ScanDir Album/CD2: %v", err)
+	}
+
+	parent, err := database.GetDirectoryByPath(lib.ID, "Album")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parent == nil {
+		t.Fatal("Album row disappeared")
+	}
+	if !parent.IsAudio {
+		t.Error("Album: IsAudio cleared by indexing its child")
+	}
+	if parent.CodecSummary != "FLAC" {
+		t.Errorf("Album CodecSummary: got %q want %q", parent.CodecSummary, "FLAC")
+	}
+	if tracks := tracksByName(t, database, lib.ID, "Album"); len(tracks) != 1 {
+		t.Errorf("Album tracks: got %d want 1", len(tracks))
+	}
+}
+
+func TestScanDirSecondCallDoesNotReprobe(t *testing.T) {
+	prober := &mockProber{}
+	s, _, lib, _ := scanDirFixture(t, map[string][]string{
+		"Album": {"01.flac", "02.flac"},
+	}, prober, ScanConfig{})
+
+	if err := s.ScanDir(context.Background(), lib, "Album"); err != nil {
+		t.Fatalf("first ScanDir: %v", err)
+	}
+	if got := prober.total(); got != 2 {
+		t.Fatalf("first ScanDir probes: got %d want 2", got)
+	}
+
+	if err := s.ScanDir(context.Background(), lib, "Album"); err != nil {
+		t.Fatalf("second ScanDir: %v", err)
+	}
+	if got := prober.total(); got != 2 {
+		t.Errorf("second ScanDir spawned %d extra probes, want 0", got-2)
+	}
+}
+
+func TestScanDirReprobesChangedFile(t *testing.T) {
+	prober := &mockProber{}
+	s, database, lib, root := scanDirFixture(t, map[string][]string{
+		"Album": {"01.flac", "02.flac"},
+	}, prober, ScanConfig{})
+
+	if err := s.ScanDir(context.Background(), lib, "Album"); err != nil {
+		t.Fatalf("first ScanDir: %v", err)
+	}
+
+	// A distant timestamp, not a rewrite: the (size, mtime) cache key has
+	// nanosecond resolution and a rewrite can land inside the same window.
+	touched := filepath.Join(root, "Album", "02.flac")
+	distant := time.Now().Add(-72 * time.Hour)
+	if err := os.Chtimes(touched, distant, distant); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.ScanDir(context.Background(), lib, "Album"); err != nil {
+		t.Fatalf("second ScanDir: %v", err)
+	}
+
+	if got := prober.count(touched); got != 2 {
+		t.Errorf("touched file probed %d times, want 2 (once per ScanDir)", got)
+	}
+	if got := prober.count(filepath.Join(root, "Album", "01.flac")); got != 1 {
+		t.Errorf("unchanged file probed %d times, want 1", got)
+	}
+	if got := tracksByName(t, database, lib.ID, "Album")["02.flac"].MTime; got != distant.UnixNano() {
+		t.Errorf("02.flac MTime: got %d want %d", got, distant.UnixNano())
+	}
+}
+
+func TestScanDirPicksUpAddedAndRemovedFiles(t *testing.T) {
+	s, database, lib, root := scanDirFixture(t, map[string][]string{
+		"Album": {"01.flac", "02.flac"},
+	}, &mockProber{}, ScanConfig{})
+
+	if err := s.ScanDir(context.Background(), lib, "Album"); err != nil {
+		t.Fatalf("first ScanDir: %v", err)
+	}
+
+	if err := os.Remove(filepath.Join(root, "Album", "02.flac")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "Album", "03.flac"), []byte("fake"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.ScanDir(context.Background(), lib, "Album"); err != nil {
+		t.Fatalf("second ScanDir: %v", err)
+	}
+
+	tracks := tracksByName(t, database, lib.ID, "Album")
+	if _, ok := tracks["02.flac"]; ok {
+		t.Error("removed file still indexed")
+	}
+	if _, ok := tracks["03.flac"]; !ok {
+		t.Error("added file not indexed")
+	}
+	if len(tracks) != 2 {
+		t.Errorf("track count: got %d want 2", len(tracks))
+	}
+}
+
+func TestScanDirKeepsSiblingDirectories(t *testing.T) {
+	s, database, lib, _ := scanDirFixture(t, map[string][]string{
+		"Album1": {"01.flac"},
+		"Album2": {"02.flac"},
+	}, &mockProber{}, ScanConfig{})
+
+	if err := s.Scan(context.Background(), lib); err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if err := s.ScanDir(context.Background(), lib, "Album1"); err != nil {
+		t.Fatalf("ScanDir: %v", err)
+	}
+
+	// A DeleteStaleDirectories call with the single scanned path would have
+	// wiped every other directory of the library.
+	dirs, err := database.GetDirectoryTree(lib.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make([]string, len(dirs))
+	for i, d := range dirs {
+		got[i] = d.Path
+	}
+	if !slices.Equal(got, []string{"Album1", "Album2"}) {
+		t.Fatalf("tree paths after ScanDir: got %v want [Album1 Album2]", got)
+	}
+	if tracks := tracksByName(t, database, lib.ID, "Album2"); len(tracks) != 1 {
+		t.Errorf("sibling tracks: got %d want 1", len(tracks))
+	}
+}
+
+func TestScanDirRefusesExcludedPaths(t *testing.T) {
+	root := makeTestTree(t, map[string][]string{
+		"Music":             {"song.flac"},
+		"transcoded":        {"out.flac"},
+		"transcoded/nested": {"out2.flac"},
+		"Music/.alto-out":   {"local.flac"},
+	})
+	database := openTestDB(t)
+	libID, err := database.UpsertLibrary("test", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := NewScanner(database, &mockProber{}, ScanConfig{
+		OutputDir: filepath.Join(root, "transcoded"),
+		CacheDir:  t.TempDir(),
+	})
+	lib := db.Library{ID: libID, Name: "test", Path: root}
+
+	for _, rel := range []string{"transcoded", "transcoded/nested", "Music/.alto-out", "..", "../elsewhere"} {
+		t.Run(rel, func(t *testing.T) {
+			err := s.ScanDir(context.Background(), lib, rel)
+			if !errors.Is(err, ErrDirExcluded) {
+				t.Fatalf("ScanDir(%q) error: got %v want ErrDirExcluded", rel, err)
+			}
+			dir, lookupErr := database.GetDirectoryByPath(libID, rel)
+			if lookupErr != nil {
+				t.Fatal(lookupErr)
+			}
+			if dir != nil {
+				t.Errorf("excluded path %q was indexed", rel)
+			}
+		})
+	}
+}
+
+func TestScanDirMissingPath(t *testing.T) {
+	s, _, lib, _ := scanDirFixture(t, map[string][]string{
+		"Album": {"01.flac"},
+	}, &mockProber{}, ScanConfig{})
+
+	err := s.ScanDir(context.Background(), lib, "Nope")
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("ScanDir on a missing path: got %v want os.ErrNotExist", err)
+	}
+}
+
+func TestScanDirNoAudioFilesCreatesNoRow(t *testing.T) {
+	s, database, lib, _ := scanDirFixture(t, map[string][]string{
+		"Docs": {"readme.txt"},
+	}, &mockProber{}, ScanConfig{})
+
+	if err := s.ScanDir(context.Background(), lib, "Docs"); err != nil {
+		t.Fatalf("ScanDir: %v", err)
+	}
+
+	dir, err := database.GetDirectoryByPath(lib.ID, "Docs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dir != nil {
+		t.Error("a directory without audio files should not be indexed")
+	}
+}
+
+func TestScanDirClearsTracksWhenAudioFilesVanish(t *testing.T) {
+	s, database, lib, root := scanDirFixture(t, map[string][]string{
+		"Album": {"01.flac"},
+	}, &mockProber{}, ScanConfig{})
+
+	if err := s.ScanDir(context.Background(), lib, "Album"); err != nil {
+		t.Fatalf("first ScanDir: %v", err)
+	}
+	if err := os.Remove(filepath.Join(root, "Album", "01.flac")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ScanDir(context.Background(), lib, "Album"); err != nil {
+		t.Fatalf("second ScanDir: %v", err)
+	}
+
+	dir, err := database.GetDirectoryByPath(lib.ID, "Album")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dir == nil {
+		t.Fatal("previously indexed directory row was deleted")
+	}
+	if dir.IsAudio {
+		t.Error("IsAudio still true after every audio file was removed")
+	}
+	files, err := database.GetDirectoryFiles(dir.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 0 {
+		t.Errorf("stale tracks kept: %v", files)
+	}
+}
+
+func TestScanDirIndexesLibraryRoot(t *testing.T) {
+	s, database, lib, _ := scanDirFixture(t, map[string][]string{
+		".": {"01.flac"},
+	}, &mockProber{}, ScanConfig{})
+
+	if err := s.ScanDir(context.Background(), lib, ""); err != nil {
+		t.Fatalf("ScanDir: %v", err)
+	}
+
+	dir, err := database.GetDirectoryByPath(lib.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dir == nil || !dir.IsAudio {
+		t.Fatalf("library root not indexed as an audio directory: %+v", dir)
+	}
+}
+
+func TestNormalizeRelPath(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{"", ""},
+		{".", ""},
+		{"/", ""},
+		{"Album", "Album"},
+		{"/Album/", "Album"},
+		{"Artist/Album", "Artist/Album"},
+		{"Artist//Album", "Artist/Album"},
+		{"Artist/./Album", "Artist/Album"},
+		{"Artist/Live/../Album", "Artist/Album"},
+		{"..", ".."},
+	}
+	for _, tc := range tests {
+		if got := normalizeRelPath(tc.in); got != tc.want {
+			t.Errorf("normalizeRelPath(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
 }

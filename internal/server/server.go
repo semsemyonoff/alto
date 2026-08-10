@@ -18,6 +18,9 @@ import (
 // discovered, reporting the running per-library discovered-directory count.
 type LibraryScanner interface {
 	ScanAll(ctx context.Context, libraries []db.Library, progress func(libraryID int64, discoveredDirs int)) error
+	// ScanDir indexes exactly one directory of lib, identified by its path
+	// relative to the library root.
+	ScanDir(ctx context.Context, lib db.Library, relPath string) error
 }
 
 // TranscodeEngine is the interface for running transcoding jobs.

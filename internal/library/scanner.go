@@ -232,14 +232,8 @@ func (s *Scanner) scan(ctx context.Context, lib db.Library, progress func(discov
 			return ctx.Err()
 		}
 
-		dirID, upsertErr := s.db.UpsertDirectoryWithAudioFlag(lib.ID, rel, "", false, "", false)
-		if upsertErr != nil {
-			slog.Warn("upsert parent directory", "path", rel, "err", upsertErr)
+		if err := s.indexParentDir(lib.ID, rel); err != nil {
 			continue
-		}
-
-		if deleteErr := s.db.DeleteStaleFiles(dirID, nil); deleteErr != nil {
-			slog.Warn("delete stale files", "dir", rel, "err", deleteErr)
 		}
 	}
 
@@ -248,50 +242,14 @@ func (s *Scanner) scan(ctx context.Context, lib db.Library, progress func(discov
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		info := dirInfos[rel]
-		audioFiles := dirToFiles[rel]
 
-		// Stored rows of this directory, keyed by filename: probeFiles reuses the
-		// ones whose (size, mtime) still match on disk instead of re-probing.
-		cached, cacheErr := s.db.GetTracksByDirPath(lib.ID, rel)
-		if cacheErr != nil {
-			slog.Warn("read cached tracks", "dir", rel, "err", cacheErr)
-			cached = nil
-		}
-
-		// Probe before resolving the cover: resolveCover reads the embedded-art
-		// flag off an already-probed track instead of probing the first file again.
-		tracks, allCached := s.probeFiles(ctx, info.absPath, audioFiles, cached)
-
-		// A cancellation during probing leaves tracks incomplete — writing it
-		// would replace an already-indexed directory with zeroed metadata.
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-
-		coverPath, hasCover := s.resolveCover(ctx, info.absPath, tracks, lib.ID, rel)
-		codecSummary := buildCodecSummary(tracks)
-
-		dirID, upsertErr := s.db.UpsertDirectoryWithAudioFlag(lib.ID, rel, codecSummary, hasCover, coverPath, true)
-		if upsertErr != nil {
-			slog.Warn("upsert directory", "path", rel, "err", upsertErr)
-			continue
-		}
-
-		// When every file was a cache hit and the on-disk name set is the stored
-		// one, the rows to write are identical to the rows already there. Skipping
-		// that transaction is what makes a warm rescan cheap; the directory row and
-		// the stale-file cleanup still run unconditionally, being one statement each.
-		if !allCached || !tracksMatchCache(tracks, cached) {
-			// One transaction per directory: a failure rolls back this directory's
-			// tracks, so warn once and move on rather than aborting the scan.
-			if writeErr := s.db.UpsertTracks(dirID, tracks); writeErr != nil {
-				slog.Warn("upsert tracks", "dir", rel, "tracks", len(tracks), "err", writeErr)
+		if err := s.indexAudioDir(ctx, lib, rel, dirInfos[rel].absPath, dirToFiles[rel]); err != nil {
+			// A cancellation aborts the whole scan; a per-directory failure has
+			// already been logged and only costs that directory.
+			if ctx.Err() != nil {
+				return ctx.Err()
 			}
-		}
-
-		if deleteErr := s.db.DeleteStaleFiles(dirID, audioFiles); deleteErr != nil {
-			slog.Warn("delete stale files", "dir", rel, "err", deleteErr)
+			continue
 		}
 	}
 
@@ -302,6 +260,181 @@ func (s *Scanner) scan(ctx context.Context, lib db.Library, progress func(discov
 
 	slog.Info("scan complete", "library", lib.Name, "directories", len(indexedPaths), "audio_directories", len(audioPaths))
 	return nil
+}
+
+// indexParentDir writes the directory row of a structural parent — a directory
+// that holds no audio itself but must exist for the tree to reach the ones that do.
+func (s *Scanner) indexParentDir(libID int64, rel string) error {
+	dirID, err := s.db.UpsertDirectoryWithAudioFlag(libID, rel, "", false, "", false)
+	if err != nil {
+		slog.Warn("upsert parent directory", "path", rel, "err", err)
+		return err
+	}
+
+	if deleteErr := s.db.DeleteStaleFiles(dirID, nil); deleteErr != nil {
+		slog.Warn("delete stale files", "dir", rel, "err", deleteErr)
+	}
+	return nil
+}
+
+// indexAudioDir indexes one directory holding audio: it probes the files
+// (reusing the stored rows whose (size, mtime) still match), resolves the cover
+// and writes the directory row, its tracks and its stale-file cleanup. rel is the
+// slash-separated path relative to the library root, absPath its location on disk.
+func (s *Scanner) indexAudioDir(ctx context.Context, lib db.Library, rel, absPath string, audioFiles []string) error {
+	// Stored rows of this directory, keyed by filename: probeFiles reuses the
+	// ones whose (size, mtime) still match on disk instead of re-probing.
+	cached, cacheErr := s.db.GetTracksByDirPath(lib.ID, rel)
+	if cacheErr != nil {
+		slog.Warn("read cached tracks", "dir", rel, "err", cacheErr)
+		cached = nil
+	}
+
+	// Probe before resolving the cover: resolveCover reads the embedded-art
+	// flag off an already-probed track instead of probing the first file again.
+	tracks, allCached := s.probeFiles(ctx, absPath, audioFiles, cached)
+
+	// A cancellation during probing leaves tracks incomplete — writing it
+	// would replace an already-indexed directory with zeroed metadata.
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+
+	coverPath, hasCover := s.resolveCover(ctx, absPath, tracks, lib.ID, rel)
+	codecSummary := buildCodecSummary(tracks)
+
+	dirID, upsertErr := s.db.UpsertDirectoryWithAudioFlag(lib.ID, rel, codecSummary, hasCover, coverPath, true)
+	if upsertErr != nil {
+		slog.Warn("upsert directory", "path", rel, "err", upsertErr)
+		return upsertErr
+	}
+
+	// When every file was a cache hit and the on-disk name set is the stored
+	// one, the rows to write are identical to the rows already there. Skipping
+	// that transaction is what makes a warm rescan cheap; the directory row and
+	// the stale-file cleanup still run unconditionally, being one statement each.
+	if !allCached || !tracksMatchCache(tracks, cached) {
+		// One transaction per directory: a failure rolls back this directory's
+		// tracks, so warn once and move on rather than aborting the scan.
+		if writeErr := s.db.UpsertTracks(dirID, tracks); writeErr != nil {
+			slog.Warn("upsert tracks", "dir", rel, "tracks", len(tracks), "err", writeErr)
+		}
+	}
+
+	if deleteErr := s.db.DeleteStaleFiles(dirID, audioFiles); deleteErr != nil {
+		slog.Warn("delete stale files", "dir", rel, "err", deleteErr)
+	}
+	return nil
+}
+
+// ErrDirExcluded reports a directory a scan would never index: an app-owned
+// .alto-* path, the configured output directory, or a path outside the library.
+var ErrDirExcluded = errors.New("directory excluded from scanning")
+
+// ScanDir indexes exactly one directory of lib, identified by its path relative
+// to the library root ("" is the root itself). It applies the same exclusions,
+// cache reuse and cover resolution a full scan applies to that directory, and
+// creates the ancestor rows the tree needs to reach it.
+//
+// It deliberately never calls DeleteStaleDirectories: with a single path the
+// call would delete the index of every other directory in the library.
+func (s *Scanner) ScanDir(ctx context.Context, lib db.Library, relPath string) error {
+	rel := normalizeRelPath(relPath)
+	absPath := lib.Path
+	if rel != "" {
+		absPath = filepath.Join(lib.Path, filepath.FromSlash(rel))
+	}
+
+	if err := s.checkScannable(lib, rel, absPath); err != nil {
+		return err
+	}
+
+	entries, err := os.ReadDir(absPath)
+	if err != nil {
+		return fmt.Errorf("read directory %q: %w", absPath, err)
+	}
+
+	var audioFiles []string
+	for _, e := range entries {
+		if e.IsDir() || e.Type()&fs.ModeSymlink != 0 {
+			continue
+		}
+		if audioExtensions[strings.ToLower(filepath.Ext(e.Name()))] {
+			audioFiles = append(audioFiles, e.Name())
+		}
+	}
+
+	if len(audioFiles) == 0 {
+		// A full scan would not index this directory at all, so do not invent a
+		// row for it. An existing row means its files are gone: keep the row (the
+		// tree may hang off it) but drop the tracks it no longer has.
+		existing, lookupErr := s.db.GetDirectoryByPath(lib.ID, rel)
+		if lookupErr != nil {
+			return fmt.Errorf("lookup directory %q: %w", rel, lookupErr)
+		}
+		if existing == nil {
+			slog.Info("scan dir: no audio files", "library", lib.Name, "path", rel)
+			return nil
+		}
+		return s.indexParentDir(lib.ID, rel)
+	}
+
+	// Ancestors keep the directory reachable in the tree. An ancestor that is
+	// already indexed is left alone: it may be an audio directory itself, and
+	// the parent-only upsert would clear its codec summary and audio flag.
+	for _, parent := range ancestorPaths(rel) {
+		existing, lookupErr := s.db.GetDirectoryByPath(lib.ID, parent)
+		if lookupErr != nil {
+			return fmt.Errorf("lookup directory %q: %w", parent, lookupErr)
+		}
+		if existing != nil {
+			continue
+		}
+		if err := s.indexParentDir(lib.ID, parent); err != nil {
+			return fmt.Errorf("index parent %q: %w", parent, err)
+		}
+	}
+
+	if err := s.indexAudioDir(ctx, lib, rel, absPath, audioFiles); err != nil {
+		return fmt.Errorf("index directory %q: %w", rel, err)
+	}
+
+	slog.Info("scan dir complete", "library", lib.Name, "path", rel, "files", len(audioFiles))
+	return nil
+}
+
+// checkScannable rejects paths a full scan would skip: anything outside the
+// library root, an app-owned .alto-* segment, or the resolved ALTO_OUTPUT_DIR.
+func (s *Scanner) checkScannable(lib db.Library, rel, absPath string) error {
+	if rel == ".." || strings.HasPrefix(rel, "../") {
+		return fmt.Errorf("%w: %q is outside the library", ErrDirExcluded, rel)
+	}
+	if containsAltoSegment(absPath, lib.Path) {
+		return fmt.Errorf("%w: %q is app-owned", ErrDirExcluded, rel)
+	}
+
+	resolvedOut, outErr := filepath.EvalSymlinks(s.cfg.OutputDir)
+	if outErr != nil || resolvedOut == "" {
+		return nil
+	}
+	resolved, rerr := filepath.EvalSymlinks(absPath)
+	if rerr != nil {
+		return nil
+	}
+	if resolved == resolvedOut || strings.HasPrefix(resolved, resolvedOut+string(filepath.Separator)) {
+		return fmt.Errorf("%w: %q is the output directory", ErrDirExcluded, rel)
+	}
+	return nil
+}
+
+// normalizeRelPath brings a library-relative path to the form the index stores:
+// slash-separated, no leading or trailing slash, with the library root as "".
+func normalizeRelPath(relPath string) string {
+	rel := filepath.ToSlash(filepath.Clean(filepath.FromSlash(relPath)))
+	if rel == "." || rel == "/" {
+		return ""
+	}
+	return strings.Trim(rel, "/")
 }
 
 // dirScanResult holds pre-read info about a directory.
