@@ -2,11 +2,15 @@ package transcode
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"testing"
+	"time"
 )
 
 // --- Progress parsing tests ---
@@ -663,6 +667,264 @@ func TestCopyNonAudioFiles(t *testing.T) {
 		if !isAudio && err != nil {
 			t.Errorf("non-audio file %s should be copied: %v", name, err)
 		}
+	}
+}
+
+// --- Pass-through copying tests ---
+
+// fileFingerprint records the content hash and modification time of a file, so a
+// test can assert a job left it byte-identical and untouched.
+type fileFingerprint struct {
+	sum   [32]byte
+	mtime time.Time
+}
+
+func fingerprintDir(t *testing.T, dir string, names []string) map[string]fileFingerprint {
+	t.Helper()
+	out := make(map[string]fileFingerprint, len(names))
+	for _, name := range names {
+		path := filepath.Join(dir, name)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		st, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("stat %s: %v", name, err)
+		}
+		out[name] = fileFingerprint{sum: sha256.Sum256(data), mtime: st.ModTime()}
+	}
+	return out
+}
+
+func assertUnchanged(t *testing.T, dir string, before map[string]fileFingerprint) {
+	t.Helper()
+	after := fingerprintDir(t, dir, sortedKeys(before))
+	for name, want := range before {
+		got := after[name]
+		if got.sum != want.sum {
+			t.Errorf("source %s was modified: content hash changed", name)
+		}
+		if !got.mtime.Equal(want.mtime) {
+			t.Errorf("source %s was touched: mtime %v, want %v", name, got.mtime, want.mtime)
+		}
+	}
+}
+
+func sortedKeys(m map[string]fileFingerprint) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// TestTranscodePassthroughCopies covers the mixed-album case: the lossless
+// tracks are transcoded, the lossy ones are copied verbatim, and every source
+// file is byte-identical afterwards.
+func TestTranscodePassthroughCopies(t *testing.T) {
+	srcDir := t.TempDir()
+	outputDir := t.TempDir()
+
+	sources := map[string]string{
+		"01 A.flac": "flac-content-a",
+		"02 B.flac": "flac-content-b",
+		"03 C.mp3":  "mp3-content-c",
+		"04 D.mp3":  "mp3-content-d",
+		"cover.jpg": "jpeg-bytes",
+	}
+	for name, content := range sources {
+		if err := os.WriteFile(filepath.Join(srcDir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before := fingerprintDir(t, srcDir, []string{"01 A.flac", "02 B.flac", "03 C.mp3", "04 D.mp3", "cover.jpg"})
+
+	var reports []ProgressReport
+	progress := make(chan ProgressReport, 10)
+	e := &Engine{
+		ffmpegBin: "ffmpeg",
+		ffmpegRun: func(ctx context.Context, args []string, progressFn func(string)) error {
+			progressFn("time=00:00:30.00")
+			return os.WriteFile(args[len(args)-1], []byte("transcoded"), 0o644)
+		},
+		probeFile: func(ctx context.Context, path string) error { return nil },
+		diskAvail: func(string) (uint64, error) { return 1 << 30, nil },
+	}
+
+	job := Job{
+		ID:          "passthrough-test",
+		LibraryRoot: srcDir,
+		LibraryName: "music",
+		SourceDir:   srcDir,
+		OutputMode:  OutputShared,
+		OutputDir:   outputDir,
+		Preset:      OpusMusicHigh,
+		Files: []FileInfo{
+			{Name: "01 A.flac", Duration: 60},
+			{Name: "02 B.flac", Duration: 60},
+		},
+		Passthrough: []FileInfo{
+			{Name: "03 C.mp3", Duration: 60},
+			{Name: "04 D.mp3", Duration: 60},
+		},
+	}
+
+	if err := e.Transcode(context.Background(), job, progress); err != nil {
+		t.Fatalf("Transcode: %v", err)
+	}
+	close(progress)
+	for r := range progress {
+		reports = append(reports, r)
+	}
+
+	outDir := filepath.Join(outputDir, "music")
+
+	// Transcoded outputs exist.
+	for _, name := range []string{"01 A.opus", "02 B.opus"} {
+		data, err := os.ReadFile(filepath.Join(outDir, name))
+		if err != nil {
+			t.Errorf("transcoded output %s missing: %v", name, err)
+			continue
+		}
+		if string(data) != "transcoded" {
+			t.Errorf("%s content = %q, want %q", name, data, "transcoded")
+		}
+	}
+
+	// Pass-through files are copied byte-for-byte under their original names.
+	for _, name := range []string{"03 C.mp3", "04 D.mp3"} {
+		data, err := os.ReadFile(filepath.Join(outDir, name))
+		if err != nil {
+			t.Errorf("pass-through %s missing from output: %v", name, err)
+			continue
+		}
+		if string(data) != sources[name] {
+			t.Errorf("pass-through %s content = %q, want %q", name, data, sources[name])
+		}
+	}
+
+	// The pass-through sources were not transcoded into the output as well.
+	for _, name := range []string{"03 C.opus", "04 D.opus"} {
+		if _, err := os.Stat(filepath.Join(outDir, name)); err == nil {
+			t.Errorf("pass-through file should not be transcoded: %s exists", name)
+		}
+	}
+
+	// Non-audio copying still runs after the pass-through copies.
+	if _, err := os.Stat(filepath.Join(outDir, "cover.jpg")); err != nil {
+		t.Errorf("non-audio file not copied: %v", err)
+	}
+
+	// Progress counts the transcoded set only.
+	if len(reports) != 2 {
+		t.Fatalf("expected 2 progress reports, got %d", len(reports))
+	}
+	for i, r := range reports {
+		if r.TotalFiles != 2 {
+			t.Errorf("report %d TotalFiles = %d, want 2 (transcoded set only)", i, r.TotalFiles)
+		}
+	}
+
+	assertUnchanged(t, srcDir, before)
+}
+
+// TestTranscodePassthroughCopyFailureFailsJob pins the difference from
+// copyNonAudioFiles: an explicitly requested file that cannot be copied fails
+// the whole job rather than being logged and skipped.
+func TestTranscodePassthroughCopyFailureFailsJob(t *testing.T) {
+	srcDir := t.TempDir()
+	outputDir := t.TempDir()
+
+	if err := os.WriteFile(filepath.Join(srcDir, "a.flac"), []byte("audio"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	e := &Engine{
+		ffmpegBin: "ffmpeg",
+		ffmpegRun: func(ctx context.Context, args []string, progressFn func(string)) error {
+			return os.WriteFile(args[len(args)-1], []byte("transcoded"), 0o644)
+		},
+		probeFile: func(ctx context.Context, path string) error { return nil },
+		diskAvail: func(string) (uint64, error) { return 1 << 30, nil },
+	}
+
+	job := Job{
+		ID:          "passthrough-fail",
+		LibraryRoot: srcDir,
+		LibraryName: "music",
+		SourceDir:   srcDir,
+		OutputMode:  OutputShared,
+		OutputDir:   outputDir,
+		Preset:      OpusMusicHigh,
+		Files:       []FileInfo{{Name: "a.flac", Duration: 60}},
+		// Never written to disk: the copy cannot succeed.
+		Passthrough: []FileInfo{{Name: "gone.mp3", Duration: 60}},
+	}
+
+	err := e.Transcode(context.Background(), job, nil)
+	if err == nil {
+		t.Fatal("expected the job to fail when a pass-through copy fails")
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("error = %v, want it to wrap os.ErrNotExist", err)
+	}
+	if !strings.Contains(err.Error(), "gone.mp3") {
+		t.Errorf("error %v should name the offending file", err)
+	}
+}
+
+// TestTranscodeEmptyPassthroughUnchanged asserts the default (no pass-through)
+// output is exactly what it was before the feature: audio sources are never
+// copied into the output directory.
+func TestTranscodeEmptyPassthroughUnchanged(t *testing.T) {
+	srcDir := t.TempDir()
+	outputDir := t.TempDir()
+
+	for _, name := range []string{"a.flac", "b.mp3", "cover.jpg"} {
+		if err := os.WriteFile(filepath.Join(srcDir, name), []byte("content:"+name), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	e := &Engine{
+		ffmpegBin: "ffmpeg",
+		ffmpegRun: func(ctx context.Context, args []string, progressFn func(string)) error {
+			return os.WriteFile(args[len(args)-1], []byte("transcoded"), 0o644)
+		},
+		probeFile: func(ctx context.Context, path string) error { return nil },
+		diskAvail: func(string) (uint64, error) { return 1 << 30, nil },
+	}
+
+	job := Job{
+		ID:          "no-passthrough",
+		LibraryRoot: srcDir,
+		LibraryName: "music",
+		SourceDir:   srcDir,
+		OutputMode:  OutputShared,
+		OutputDir:   outputDir,
+		Preset:      OpusMusicHigh,
+		Files:       []FileInfo{{Name: "a.flac", Duration: 60}},
+	}
+
+	if err := e.Transcode(context.Background(), job, nil); err != nil {
+		t.Fatalf("Transcode: %v", err)
+	}
+
+	outDir := filepath.Join(outputDir, "music")
+	entries, err := os.ReadDir(outDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, entry := range entries {
+		got = append(got, entry.Name())
+	}
+	sort.Strings(got)
+	want := []string{"a.opus", "cover.jpg"}
+	if !sliceEqual(got, want) {
+		t.Errorf("output dir contents = %v, want %v", got, want)
 	}
 }
 

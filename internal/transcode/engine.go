@@ -34,6 +34,12 @@ type Job struct {
 	SourceDir string
 	// Files lists the audio files within SourceDir to transcode.
 	Files []FileInfo
+	// Passthrough lists audio files within SourceDir to copy verbatim into the
+	// output directory instead of transcoding them. copyNonAudioFiles skips
+	// anything with an audio extension, so a mixed album's unselected tracks
+	// reach the output only through this list. Ignored by OutputReplace, where
+	// the originals are already in place.
+	Passthrough []FileInfo
 	// Preset holds codec and quality parameters.
 	Preset Preset
 	// OutputMode determines where output files are placed.
@@ -143,7 +149,8 @@ func OutFilename(name string, codec Codec) string {
 	}
 }
 
-// transcodeToDir transcodes all files in the job to outDir, then copies non-audio files.
+// transcodeToDir transcodes all files in the job to outDir, then copies the
+// pass-through files and the non-audio files.
 func (e *Engine) transcodeToDir(ctx context.Context, job Job, outDir string, progress chan<- ProgressReport) error {
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return fmt.Errorf("create output dir %s: %w", outDir, err)
@@ -178,7 +185,35 @@ func (e *Engine) transcodeToDir(ctx context.Context, job Job, outDir string, pro
 			return fmt.Errorf("output verification failed for %s: %w", fi.Name, err)
 		}
 	}
+	if err := copyPassthroughFiles(ctx, job, outDir); err != nil {
+		return err
+	}
 	return copyNonAudioFiles(ctx, job.SourceDir, outDir)
+}
+
+// copyPassthroughFiles copies each of the job's pass-through files verbatim from
+// SourceDir into outDir. Unlike copyNonAudioFiles, which logs and continues for
+// incidental files it discovers by extension, a failed copy here fails the job:
+// these files were requested by name, and a job reporting "done" after silently
+// dropping one would leave an incomplete album in the output.
+func copyPassthroughFiles(ctx context.Context, job Job, outDir string) error {
+	for _, fi := range job.Passthrough {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		src := filepath.Join(job.SourceDir, fi.Name)
+		dst := filepath.Join(outDir, fi.Name)
+		slog.Info("copying file verbatim", "file", fi.Name, "output", dst)
+		if err := copyFile(ctx, src, dst); err != nil {
+			// A canceled context aborts a large copy mid-stream; surface the
+			// cancellation so the queue reports "canceled" rather than "failed".
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return fmt.Errorf("copy %s: %w", fi.Name, err)
+		}
+	}
+	return nil
 }
 
 // replacedEntry records a completed per-file replacement for rollback purposes.
