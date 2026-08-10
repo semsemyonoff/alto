@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -432,6 +433,161 @@ func TestHandleTranscodeStart_NoSelectionUnchanged(t *testing.T) {
 	}
 }
 
+// acceptedBody decodes a 202 transcode response.
+func acceptedBody(t *testing.T, w *httptest.ResponseRecorder) transcodeAcceptedDTO {
+	t.Helper()
+	var resp transcodeAcceptedDTO
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode 202 body %q: %v", w.Body.String(), err)
+	}
+	if resp.JobID == "" {
+		t.Fatalf("expected job_id in %s", w.Body.String())
+	}
+	return resp
+}
+
+// jobSub returns the queue-panel sub line the started job was created with.
+func jobSub(t *testing.T, srv *Server, jobID string) string {
+	t.Helper()
+	js, ok := srv.jobs.get(jobID)
+	if !ok {
+		t.Fatalf("job %q not found", jobID)
+	}
+	srv.jobs.mu.Lock()
+	defer srv.jobs.mu.Unlock()
+	return js.sub
+}
+
+// TestHandleTranscodeStart_AcceptedBody asserts the 202 names both halves of
+// the resolved selection, with the reason matching how it was narrowed.
+func TestHandleTranscodeStart_AcceptedBody(t *testing.T) {
+	tests := []struct {
+		name        string
+		tracks      []db.Track
+		extra       map[string]any
+		wantFiles   []string
+		wantSkipped []skippedDTO
+	}{
+		{
+			name:      "skip_lossy reports the lossy tracks",
+			tracks:    mixedTracks,
+			extra:     map[string]any{"skip_lossy": true},
+			wantFiles: []string{"01.flac", "03.flac"},
+			wantSkipped: []skippedDTO{
+				{Name: "02.mp3", Codec: "mp3", Reason: skipReasonLossy},
+			},
+		},
+		{
+			name:      "files reports the unselected tracks",
+			tracks:    mixedTracks,
+			extra:     map[string]any{"files": []string{"03.flac"}},
+			wantFiles: []string{"03.flac"},
+			wantSkipped: []skippedDTO{
+				{Name: "01.flac", Codec: "flac", Reason: skipReasonNotSelected},
+				{Name: "02.mp3", Codec: "mp3", Reason: skipReasonNotSelected},
+			},
+		},
+		{
+			name:        "skip_lossy on an all-lossless directory skips nothing",
+			tracks:      flacTracks,
+			extra:       map[string]any{"skip_lossy": true},
+			wantFiles:   []string{"01.flac", "02.flac"},
+			wantSkipped: []skippedDTO{},
+		},
+		{
+			name:        "no selection reports every file and an empty skipped list",
+			tracks:      flacTracks,
+			wantFiles:   []string{"01.flac", "02.flac"},
+			wantSkipped: []skippedDTO{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv, dirPath := newTestServerWithDirTracks(t, &mockEngine{}, tt.tracks)
+
+			body := map[string]any{"path": dirPath, "preset": "Balanced", "output_mode": "shared"}
+			maps.Copy(body, tt.extra)
+			w := postTranscode(t, srv, body)
+			if w.Code != http.StatusAccepted {
+				t.Fatalf("status = %d, want 202: %s", w.Code, w.Body.String())
+			}
+
+			resp := acceptedBody(t, w)
+			if !reflect.DeepEqual(resp.Files, tt.wantFiles) {
+				t.Errorf("files = %v, want %v", resp.Files, tt.wantFiles)
+			}
+			if !reflect.DeepEqual(resp.Skipped, tt.wantSkipped) {
+				t.Errorf("skipped = %+v, want %+v", resp.Skipped, tt.wantSkipped)
+			}
+			// The body must describe the job that was actually started.
+			if got := jobFileNames(t, srv, resp.JobID); !reflect.DeepEqual(got, resp.Files) {
+				t.Errorf("job files = %v, but body reported %v", got, resp.Files)
+			}
+		})
+	}
+}
+
+// TestHandleTranscodeStart_AcceptedBodyEmitsArrays pins the wire shape: both
+// lists are JSON arrays even when empty, so clients never see null.
+func TestHandleTranscodeStart_AcceptedBodyEmitsArrays(t *testing.T) {
+	srv, dirPath := newTestServerWithDirTracks(t, &mockEngine{}, flacTracks)
+
+	w := postTranscode(t, srv, map[string]any{"path": dirPath, "preset": "Balanced"})
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202: %s", w.Code, w.Body.String())
+	}
+	var raw struct {
+		Files   json.RawMessage `json:"files"`
+		Skipped json.RawMessage `json:"skipped"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+		t.Fatal(err)
+	}
+	if string(raw.Skipped) != "[]" {
+		t.Errorf("skipped = %s, want []", raw.Skipped)
+	}
+	if !strings.HasPrefix(string(raw.Files), "[") {
+		t.Errorf("files = %s, want an array", raw.Files)
+	}
+}
+
+// TestHandleTranscodeStart_SubUsesSelectedCodec covers a mixed directory whose
+// first track is lossy: the sub line must describe the codec being transcoded,
+// not the one being skipped.
+func TestHandleTranscodeStart_SubUsesSelectedCodec(t *testing.T) {
+	tracks := []db.Track{
+		{Filename: "01.mp3", Codec: "mp3"},
+		{Filename: "02.flac", Codec: "flac"},
+	}
+
+	t.Run("skip_lossy", func(t *testing.T) {
+		srv, dirPath := newTestServerWithDirTracks(t, &mockEngine{}, tracks)
+		w := postTranscode(t, srv, map[string]any{
+			"path": dirPath, "preset": "Balanced", "skip_lossy": true,
+		})
+		if w.Code != http.StatusAccepted {
+			t.Fatalf("status = %d, want 202: %s", w.Code, w.Body.String())
+		}
+		if got := jobSub(t, srv, acceptedBody(t, w).JobID); !strings.HasPrefix(got, "flac → ") {
+			t.Errorf("sub = %q, want it to start from the selected flac source", got)
+		}
+	})
+
+	t.Run("explicit files", func(t *testing.T) {
+		srv, dirPath := newTestServerWithDirTracks(t, &mockEngine{}, tracks)
+		w := postTranscode(t, srv, map[string]any{
+			"path": dirPath, "preset": "Balanced", "files": []string{"02.flac"},
+		})
+		if w.Code != http.StatusAccepted {
+			t.Fatalf("status = %d, want 202: %s", w.Code, w.Body.String())
+		}
+		if got := jobSub(t, srv, acceptedBody(t, w).JobID); !strings.HasPrefix(got, "flac → ") {
+			t.Errorf("sub = %q, want it to start from the selected flac source", got)
+		}
+	})
+}
+
 // --- POST /api/transcode ---
 
 func TestHandleTranscodeStart_Success(t *testing.T) {
@@ -456,12 +612,8 @@ func TestHandleTranscodeStart_Success(t *testing.T) {
 	if w.Code != http.StatusAccepted {
 		t.Fatalf("expected 202, got %d: %s", w.Code, w.Body.String())
 	}
-	var resp map[string]string
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatal(err)
-	}
-	if resp["job_id"] == "" {
-		t.Error("expected non-empty job_id")
+	if got := acceptedBody(t, w).Files; !reflect.DeepEqual(got, []string{"track1.flac", "track2.flac"}) {
+		t.Errorf("files = %v, want both seeded tracks", got)
 	}
 }
 

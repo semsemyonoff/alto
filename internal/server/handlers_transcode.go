@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strconv"
 
+	"github.com/semsemyonoff/ALTO/internal/db"
 	"github.com/semsemyonoff/ALTO/internal/transcode"
 )
 
@@ -36,6 +37,28 @@ type transcodeRequest struct {
 	SkipLossy   bool     `json:"skip_lossy,omitempty"`
 	Files       []string `json:"files,omitempty"`
 	CopySkipped bool     `json:"copy_skipped,omitempty"`
+}
+
+// transcodeAcceptedDTO is the 202 body of POST /api/transcode. It names both
+// halves of the resolved selection, so a client learns what the server actually
+// scheduled — and what it left alone — without a follow-up request.
+type transcodeAcceptedDTO struct {
+	JobID   string       `json:"job_id"`
+	Files   []string     `json:"files"`
+	Skipped []skippedDTO `json:"skipped"`
+}
+
+// newTranscodeAcceptedDTO builds the 202 body, normalising both lists to empty
+// arrays so a client never has to tell [] from null.
+func newTranscodeAcceptedDTO(id string, selected []db.Track, skipped []skippedDTO) transcodeAcceptedDTO {
+	files := make([]string, 0, len(selected))
+	for _, t := range selected {
+		files = append(files, t.Filename)
+	}
+	if skipped == nil {
+		skipped = []skippedDTO{}
+	}
+	return transcodeAcceptedDTO{JobID: id, Files: files, Skipped: skipped}
 }
 
 // handleTranscodeStart handles POST /api/transcode.
@@ -104,6 +127,7 @@ func (s *Server) handleTranscodeStart(w http.ResponseWriter, r *http.Request) {
 	// Resolve the selection. Without one, the all-or-nothing gate still applies:
 	// a mixed directory is refused rather than silently narrowed.
 	selected := tracks
+	skipReason := ""
 	switch {
 	case req.SkipLossy:
 		lossless, _ := partitionByLossless(tracks)
@@ -113,6 +137,7 @@ func (s *Server) handleTranscodeStart(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		selected = lossless
+		skipReason = skipReasonLossy
 	case req.Files != nil:
 		sel, err := validateFileNames(req.Files, tracks)
 		if err != nil {
@@ -120,12 +145,18 @@ func (s *Server) handleTranscodeStart(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		selected = sel
+		skipReason = skipReasonNotSelected
 	default:
 		if !canTranscodeTracks(tracks) {
 			writeAPIError(w, http.StatusUnprocessableEntity, codeMixedDirectory,
 				"transcoding is available only for directories with lossless tracks", nil)
 			return
 		}
+	}
+	// Without a selection nothing is skipped, so the reason never applies.
+	var skipped []skippedDTO
+	if skipReason != "" {
+		skipped = skippedReport(tracks, selected, skipReason)
 	}
 
 	preset, err := resolvePreset(req)
@@ -202,7 +233,9 @@ func (s *Server) handleTranscodeStart(w http.ResponseWriter, r *http.Request) {
 	if rel != "" && rel != "." {
 		title = lib.Name + "/" + rel
 	}
-	sub := fmt.Sprintf("%s → %s/%s", tracks[0].Codec, preset.Codec, preset.Name)
+	// The source codec describes what is being transcoded, so it comes from the
+	// selected set: on a mixed directory tracks[0] can be a track the job skips.
+	sub := fmt.Sprintf("%s → %s/%s", selected[0].Codec, preset.Codec, preset.Name)
 
 	js, started := s.jobs.start(id, resolved, job, title, sub)
 	if !started {
@@ -213,7 +246,7 @@ func (s *Server) handleTranscodeStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusAccepted, map[string]string{"job_id": id})
+	writeJSON(w, http.StatusAccepted, newTranscodeAcceptedDTO(id, selected, skipped))
 }
 
 // writeSelectionError maps a validateFileNames sentinel to its API error code,
