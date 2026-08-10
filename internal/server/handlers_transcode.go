@@ -65,19 +65,20 @@ func newTranscodeAcceptedDTO(id string, selected []db.Track, skipped []skippedDT
 // It validates the source path, looks up tracks in the index, starts a job, and returns the job ID.
 func (s *Server) handleTranscodeStart(w http.ResponseWriter, r *http.Request) {
 	if s.engine == nil {
-		http.Error(w, "transcoding not available", http.StatusServiceUnavailable)
+		writeAPIError(w, http.StatusServiceUnavailable, codeEngineUnavailable,
+			"transcoding not available", nil)
 		return
 	}
 
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MiB max
 	var req transcodeRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, codeInvalidRequest, "invalid request body", nil)
 		return
 	}
 
 	if req.Path == "" {
-		http.Error(w, "path required", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, codeInvalidRequest, `"path" is required`, nil)
 		return
 	}
 
@@ -95,33 +96,35 @@ func (s *Server) handleTranscodeStart(w http.ResponseWriter, r *http.Request) {
 	// Validate source path against library roots (library-only policy).
 	resolved, err := LibraryOnlyValidate(req.Path, s.libRoots())
 	if err != nil {
-		WritePathError(w, err)
+		WritePathErrorJSON(w, err)
 		return
 	}
 
 	lib, rel, ok := s.findLibraryForPath(resolved)
 	if !ok {
-		http.Error(w, "library not found for path", http.StatusNotFound)
+		writeAPIError(w, http.StatusNotFound, codeLibraryNotFound, "library not found for path", nil)
 		return
 	}
 
 	dir, err := s.db.GetDirectoryByPath(lib.ID, rel)
 	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, codeInternalError, "internal error", nil)
 		return
 	}
+	// The path exists on disk (LibraryOnlyValidate resolved it) but carries no
+	// index row: the remedy is a scan, not a corrected path.
 	if dir == nil {
-		http.Error(w, "directory not found in index", http.StatusNotFound)
+		writeAPIError(w, http.StatusNotFound, codeNotIndexed, "directory not found in index", nil)
 		return
 	}
 
 	tracks, err := s.db.GetDirectoryFiles(dir.ID)
 	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, codeInternalError, "internal error", nil)
 		return
 	}
 	if len(tracks) == 0 {
-		http.Error(w, "no tracks found in directory", http.StatusUnprocessableEntity)
+		writeAPIError(w, http.StatusUnprocessableEntity, codeNoTracks, "no tracks found in directory", nil)
 		return
 	}
 	// Resolve the selection. Without one, the all-or-nothing gate still applies:
@@ -161,13 +164,13 @@ func (s *Server) handleTranscodeStart(w http.ResponseWriter, r *http.Request) {
 
 	preset, err := resolvePreset(req)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, codeInvalidRequest, err.Error(), nil)
 		return
 	}
 
 	outputMode, err := resolveOutputMode(req.OutputMode)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, codeInvalidRequest, err.Error(), nil)
 		return
 	}
 
@@ -204,7 +207,8 @@ func (s *Server) handleTranscodeStart(w http.ResponseWriter, r *http.Request) {
 		switch outputMode {
 		case transcode.OutputShared:
 			if s.cfg.OutputDir == "" {
-				http.Error(w, "output dir not configured for shared mode", http.StatusUnprocessableEntity)
+				writeAPIError(w, http.StatusUnprocessableEntity, codeOutputDirNotConfigured,
+					"output dir not configured for shared mode", nil)
 				return
 			}
 			outDir = filepath.Join(s.cfg.OutputDir, lib.Name, rel)
@@ -212,7 +216,7 @@ func (s *Server) handleTranscodeStart(w http.ResponseWriter, r *http.Request) {
 			outDir = filepath.Join(resolved, transcode.LocalOutputDirName)
 		}
 		if _, err := DestinationValidate(outDir, s.libRoots(), s.cfg.OutputDir); err != nil {
-			WritePathError(w, err)
+			WritePathErrorJSON(w, err)
 			return
 		}
 	}
@@ -239,10 +243,9 @@ func (s *Server) handleTranscodeStart(w http.ResponseWriter, r *http.Request) {
 
 	js, started := s.jobs.start(id, resolved, job, title, sub)
 	if !started {
-		writeJSON(w, http.StatusConflict, map[string]string{
-			"error":  "a transcode job is already running for this directory",
-			"job_id": js.id,
-		})
+		writeAPIError(w, http.StatusConflict, codeJobAlreadyRunning,
+			"a transcode job is already running for this directory",
+			map[string]any{"job_id": js.id})
 		return
 	}
 
@@ -288,7 +291,7 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleJobEvents(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, codeInternalError, "streaming unsupported", nil)
 		return
 	}
 
@@ -335,7 +338,7 @@ func writeJobEvent(w http.ResponseWriter, ev jobEvent) {
 func (s *Server) handleJobCancel(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {
-		http.Error(w, "job ID required", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, codeInvalidRequest, "job ID required", nil)
 		return
 	}
 
@@ -343,9 +346,9 @@ func (s *Server) handleJobCancel(w http.ResponseWriter, r *http.Request) {
 	case cancelResultCanceled:
 		writeJSON(w, http.StatusAccepted, map[string]string{"status": "canceled"})
 	case cancelResultNotFound:
-		http.Error(w, "job not found", http.StatusNotFound)
+		writeAPIError(w, http.StatusNotFound, codeJobNotFound, "job not found", nil)
 	case cancelResultFinished:
-		http.Error(w, "job already finished", http.StatusConflict)
+		writeAPIError(w, http.StatusConflict, codeJobAlreadyFinished, "job already finished", nil)
 	}
 }
 
@@ -356,7 +359,7 @@ func (s *Server) handleJobCancel(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleJobRemove(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {
-		http.Error(w, "job ID required", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, codeInvalidRequest, "job ID required", nil)
 		return
 	}
 
@@ -364,9 +367,10 @@ func (s *Server) handleJobRemove(w http.ResponseWriter, r *http.Request) {
 	case removeResultRemoved:
 		writeJSON(w, http.StatusAccepted, map[string]string{"status": "removed"})
 	case removeResultNotFound:
-		http.Error(w, "job not found", http.StatusNotFound)
+		writeAPIError(w, http.StatusNotFound, codeJobNotFound, "job not found", nil)
 	case removeResultActive:
-		http.Error(w, "cancel the job before removing it", http.StatusConflict)
+		writeAPIError(w, http.StatusConflict, codeJobAlreadyRunning,
+			"cancel the job before removing it", nil)
 	}
 }
 
@@ -375,13 +379,13 @@ func (s *Server) handleJobRemove(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleTranscodeLog(w http.ResponseWriter, r *http.Request) {
 	jobID := r.PathValue("jobID")
 	if jobID == "" {
-		http.Error(w, "job ID required", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, codeInvalidRequest, "job ID required", nil)
 		return
 	}
 
 	js, ok := s.jobs.get(jobID)
 	if !ok {
-		http.Error(w, "job not found", http.StatusNotFound)
+		writeAPIError(w, http.StatusNotFound, codeJobNotFound, "job not found", nil)
 		return
 	}
 
@@ -391,7 +395,8 @@ func (s *Server) handleTranscodeLog(w http.ResponseWriter, r *http.Request) {
 	if nStr := r.URL.Query().Get("n"); nStr != "" {
 		n, err := strconv.Atoi(nStr)
 		if err != nil || n <= 0 {
-			http.Error(w, "invalid n", http.StatusBadRequest)
+			writeAPIError(w, http.StatusBadRequest, codeInvalidRequest,
+				`"n" must be a positive integer`, nil)
 			return
 		}
 		if n < len(lines) {

@@ -698,8 +698,8 @@ func TestHandleTranscodeStart_LossyDirectoryRejected(t *testing.T) {
 	if w.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("expected 422, got %d: %s", w.Code, w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), "lossless") {
-		t.Fatalf("expected lossless rejection message, got %s", w.Body.String())
+	if got := errorCode(t, w); got != codeMixedDirectory {
+		t.Fatalf("code = %q, want %q", got, codeMixedDirectory)
 	}
 }
 
@@ -734,6 +734,9 @@ func TestHandleTranscodeStart_Deduplication(t *testing.T) {
 	if resp["job_id"] == "" {
 		t.Error("expected conflicting job_id in response")
 	}
+	if resp["code"] != codeJobAlreadyRunning {
+		t.Errorf("code = %q, want %q", resp["code"], codeJobAlreadyRunning)
+	}
 }
 
 func TestHandleTranscodeStart_InvalidOutputMode(t *testing.T) {
@@ -752,7 +755,10 @@ func TestHandleTranscodeStart_InvalidOutputMode(t *testing.T) {
 	}
 }
 
-func TestHandleTranscodeStart_DirectoryNotIndexed(t *testing.T) {
+// TestHandleTranscodeStart_PathNotOnDisk covers a path that does not exist at
+// all — distinct from a path that exists but carries no index row, which
+// answers not_indexed (see TestHandleTranscodeStart_RejectionCodes).
+func TestHandleTranscodeStart_PathNotOnDisk(t *testing.T) {
 	eng := &mockEngine{}
 	srv, _, libDir, _ := newTestServerWithEngine(t, eng)
 
@@ -763,9 +769,213 @@ func TestHandleTranscodeStart_DirectoryNotIndexed(t *testing.T) {
 
 	srv.handleTranscodeStart(w, req)
 
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("expected 404, got %d: %s", w.Code, w.Body.String())
+	assertAPIError(t, w, http.StatusNotFound, codePathNotFound)
+}
+
+// assertAPIError asserts a machine-readable error envelope: status, JSON
+// content type, and the documented code.
+func assertAPIError(t *testing.T, w *httptest.ResponseRecorder, status int, code string) {
+	t.Helper()
+	if w.Code != status {
+		t.Fatalf("status = %d, want %d: %s", w.Code, status, w.Body.String())
 	}
+	if ct := w.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("content type = %q, want application/json", ct)
+	}
+	if got := errorCode(t, w); got != code {
+		t.Errorf("code = %q, want %q: %s", got, code, w.Body.String())
+	}
+}
+
+// TestHandleTranscodeStart_RejectionCodes walks every rejection path of
+// POST /api/transcode and asserts its documented code, so clients can branch on
+// `code` instead of matching message strings.
+func TestHandleTranscodeStart_RejectionCodes(t *testing.T) {
+	cases := []struct {
+		name       string
+		tracks     []db.Track
+		prepare    func(*Server)
+		body       func(t *testing.T, dir string) map[string]any
+		wantStatus int
+		wantCode   string
+	}{
+		{
+			name:    "engine unavailable",
+			tracks:  flacTracks,
+			prepare: func(s *Server) { s.engine = nil },
+			body: func(_ *testing.T, dir string) map[string]any {
+				return map[string]any{"path": dir, "preset": "Balanced"}
+			},
+			wantStatus: http.StatusServiceUnavailable,
+			wantCode:   codeEngineUnavailable,
+		},
+		{
+			name:   "missing path",
+			tracks: flacTracks,
+			body: func(_ *testing.T, _ string) map[string]any {
+				return map[string]any{"preset": "Balanced"}
+			},
+			wantStatus: http.StatusBadRequest,
+			wantCode:   codeInvalidRequest,
+		},
+		{
+			name:   "path outside library",
+			tracks: flacTracks,
+			body: func(_ *testing.T, _ string) map[string]any {
+				return map[string]any{"path": "/etc", "preset": "Balanced"}
+			},
+			wantStatus: http.StatusForbidden,
+			wantCode:   codePathForbidden,
+		},
+		{
+			name:   "app-owned path segment",
+			tracks: flacTracks,
+			body: func(_ *testing.T, dir string) map[string]any {
+				return map[string]any{"path": filepath.Join(dir, transcode.LocalOutputDirName), "preset": "Balanced"}
+			},
+			wantStatus: http.StatusForbidden,
+			wantCode:   codePathForbidden,
+		},
+		{
+			name:   "path missing on disk",
+			tracks: flacTracks,
+			body: func(_ *testing.T, dir string) map[string]any {
+				return map[string]any{"path": filepath.Join(dir, "nope"), "preset": "Balanced"}
+			},
+			wantStatus: http.StatusNotFound,
+			wantCode:   codePathNotFound,
+		},
+		{
+			// Exists on disk, absent from the index: the remedy is a scan, not
+			// a corrected path — hence a different code from path_not_found.
+			name:   "directory not indexed",
+			tracks: flacTracks,
+			body: func(t *testing.T, dir string) map[string]any {
+				unindexed := filepath.Join(filepath.Dir(dir), "unindexed")
+				if err := os.MkdirAll(unindexed, 0o755); err != nil {
+					t.Fatalf("MkdirAll: %v", err)
+				}
+				return map[string]any{"path": unindexed, "preset": "Balanced"}
+			},
+			wantStatus: http.StatusNotFound,
+			wantCode:   codeNotIndexed,
+		},
+		{
+			name:   "directory has no tracks",
+			tracks: nil,
+			body: func(_ *testing.T, dir string) map[string]any {
+				return map[string]any{"path": dir, "preset": "Balanced"}
+			},
+			wantStatus: http.StatusUnprocessableEntity,
+			wantCode:   codeNoTracks,
+		},
+		{
+			name:   "unknown preset",
+			tracks: flacTracks,
+			body: func(_ *testing.T, dir string) map[string]any {
+				return map[string]any{"path": dir, "preset": "Nope"}
+			},
+			wantStatus: http.StatusBadRequest,
+			wantCode:   codeInvalidRequest,
+		},
+		{
+			name:   "unknown output mode",
+			tracks: flacTracks,
+			body: func(_ *testing.T, dir string) map[string]any {
+				return map[string]any{"path": dir, "preset": "Balanced", "output_mode": "sideways"}
+			},
+			wantStatus: http.StatusBadRequest,
+			wantCode:   codeInvalidRequest,
+		},
+		{
+			name:    "shared mode without output dir",
+			tracks:  flacTracks,
+			prepare: func(s *Server) { s.cfg.OutputDir = "" },
+			body: func(_ *testing.T, dir string) map[string]any {
+				return map[string]any{"path": dir, "preset": "Balanced", "output_mode": "shared"}
+			},
+			wantStatus: http.StatusUnprocessableEntity,
+			wantCode:   codeOutputDirNotConfigured,
+		},
+		{
+			name:   "mixed directory without selection",
+			tracks: mixedTracks,
+			body: func(_ *testing.T, dir string) map[string]any {
+				return map[string]any{"path": dir, "preset": "Balanced"}
+			},
+			wantStatus: http.StatusUnprocessableEntity,
+			wantCode:   codeMixedDirectory,
+		},
+		{
+			name:   "skip_lossy with no lossless track",
+			tracks: lossyTracks,
+			body: func(_ *testing.T, dir string) map[string]any {
+				return map[string]any{"path": dir, "preset": "Balanced", "skip_lossy": true}
+			},
+			wantStatus: http.StatusUnprocessableEntity,
+			wantCode:   codeNoLosslessTracks,
+		},
+		{
+			name:   "skip_lossy together with files",
+			tracks: mixedTracks,
+			body: func(_ *testing.T, dir string) map[string]any {
+				return map[string]any{"path": dir, "preset": "Balanced", "skip_lossy": true, "files": []string{"01.flac"}}
+			},
+			wantStatus: http.StatusBadRequest,
+			wantCode:   codeInvalidRequest,
+		},
+		{
+			name:   "unknown file name",
+			tracks: flacTracks,
+			body: func(_ *testing.T, dir string) map[string]any {
+				return map[string]any{"path": dir, "preset": "Balanced", "files": []string{"99.flac"}}
+			},
+			wantStatus: http.StatusUnprocessableEntity,
+			wantCode:   codeUnknownFile,
+		},
+		{
+			name:   "lossy source selected",
+			tracks: mixedTracks,
+			body: func(_ *testing.T, dir string) map[string]any {
+				return map[string]any{"path": dir, "preset": "Balanced", "files": []string{"02.mp3"}}
+			},
+			wantStatus: http.StatusUnprocessableEntity,
+			wantCode:   codeLossySourceSelected,
+		},
+		{
+			name:   "output name conflict",
+			tracks: []db.Track{{Filename: "01.ape", Codec: "ape"}, {Filename: "01.flac", Codec: "flac"}},
+			body: func(_ *testing.T, dir string) map[string]any {
+				return map[string]any{"path": dir, "preset": "Balanced"}
+			},
+			wantStatus: http.StatusUnprocessableEntity,
+			wantCode:   codeOutputNameConflict,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, dir := newTestServerWithDirTracks(t, &mockEngine{}, tc.tracks)
+			if tc.prepare != nil {
+				tc.prepare(srv)
+			}
+			w := postTranscode(t, srv, tc.body(t, dir))
+			assertAPIError(t, w, tc.wantStatus, tc.wantCode)
+		})
+	}
+}
+
+// TestHandleTranscodeStart_MalformedBody covers the one rejection postTranscode
+// cannot express, since it marshals a valid map.
+func TestHandleTranscodeStart_MalformedBody(t *testing.T) {
+	srv, _ := newTestServerWithDirTracks(t, &mockEngine{}, flacTracks)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/transcode", strings.NewReader("{not json"))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.handleTranscodeStart(w, req)
+
+	assertAPIError(t, w, http.StatusBadRequest, codeInvalidRequest)
 }
 
 // --- GET /api/transcode/{jobID}/progress (retired) ---
@@ -827,9 +1037,32 @@ func TestHandleTranscodeLog_JobNotFound(t *testing.T) {
 
 	srv.handleTranscodeLog(w, req)
 
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("expected 404, got %d", w.Code)
+	assertAPIError(t, w, http.StatusNotFound, codeJobNotFound)
+}
+
+func TestHandleTranscodeLog_InvalidN(t *testing.T) {
+	jm := newJobManager(nil, 0, context.Background())
+	srv := &Server{jobs: jm}
+	if _, started := jm.start("job1", "/dir1", transcode.Job{ID: "job1"}, "t1", "s1"); !started {
+		t.Fatalf("start: expected success")
 	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/transcode/job1/log?n=0", nil)
+	req.SetPathValue("jobID", "job1")
+	w := httptest.NewRecorder()
+	srv.handleTranscodeLog(w, req)
+
+	assertAPIError(t, w, http.StatusBadRequest, codeInvalidRequest)
+}
+
+func TestHandleTranscodeLog_MissingID(t *testing.T) {
+	srv := &Server{jobs: newJobManager(nil, 0, context.Background())}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/transcode//log", nil)
+	w := httptest.NewRecorder()
+	srv.handleTranscodeLog(w, req)
+
+	assertAPIError(t, w, http.StatusBadRequest, codeInvalidRequest)
 }
 
 func TestHandleTranscodeLog_ContainsLines(t *testing.T) {
@@ -1168,9 +1401,7 @@ func TestHandleJobCancel_NotFound(t *testing.T) {
 	w := httptest.NewRecorder()
 	srv.handleJobCancel(w, req)
 
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("expected 404, got %d", w.Code)
-	}
+	assertAPIError(t, w, http.StatusNotFound, codeJobNotFound)
 }
 
 func TestHandleJobCancel_AlreadyFinished(t *testing.T) {
@@ -1188,9 +1419,7 @@ func TestHandleJobCancel_AlreadyFinished(t *testing.T) {
 	w := httptest.NewRecorder()
 	srv.handleJobCancel(w, req)
 
-	if w.Code != http.StatusConflict {
-		t.Fatalf("expected 409, got %d", w.Code)
-	}
+	assertAPIError(t, w, http.StatusConflict, codeJobAlreadyFinished)
 }
 
 func TestHandleJobCancel_MissingID(t *testing.T) {
@@ -1201,9 +1430,66 @@ func TestHandleJobCancel_MissingID(t *testing.T) {
 	w := httptest.NewRecorder()
 	srv.handleJobCancel(w, req)
 
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", w.Code)
+	assertAPIError(t, w, http.StatusBadRequest, codeInvalidRequest)
+}
+
+// --- POST /api/jobs/{id}/remove ---
+
+func TestHandleJobRemove_Terminal(t *testing.T) {
+	jm := newJobManager(nil, 0, context.Background())
+	srv := &Server{jobs: jm}
+
+	js, started := jm.start("job1", "/dir1", transcode.Job{ID: "job1"}, "t1", "s1")
+	if !started {
+		t.Fatalf("start: expected success")
 	}
+	jm.complete(js.id, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/jobs/job1/remove", nil)
+	req.SetPathValue("id", "job1")
+	w := httptest.NewRecorder()
+	srv.handleJobRemove(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestHandleJobRemove_NotFound(t *testing.T) {
+	srv := &Server{jobs: newJobManager(nil, 0, context.Background())}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/jobs/nope/remove", nil)
+	req.SetPathValue("id", "nope")
+	w := httptest.NewRecorder()
+	srv.handleJobRemove(w, req)
+
+	assertAPIError(t, w, http.StatusNotFound, codeJobNotFound)
+}
+
+func TestHandleJobRemove_StillActive(t *testing.T) {
+	jm := newJobManager(nil, 0, context.Background())
+	srv := &Server{jobs: jm}
+
+	if _, started := jm.start("job1", "/dir1", transcode.Job{ID: "job1"}, "t1", "s1"); !started {
+		t.Fatalf("start: expected success")
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/jobs/job1/remove", nil)
+	req.SetPathValue("id", "job1")
+	w := httptest.NewRecorder()
+	srv.handleJobRemove(w, req)
+
+	assertAPIError(t, w, http.StatusConflict, codeJobAlreadyRunning)
+}
+
+func TestHandleJobRemove_MissingID(t *testing.T) {
+	srv := &Server{jobs: newJobManager(nil, 0, context.Background())}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/jobs//remove", nil)
+	w := httptest.NewRecorder()
+	srv.handleJobRemove(w, req)
+
+	assertAPIError(t, w, http.StatusBadRequest, codeInvalidRequest)
 }
 
 // --- ring buffer unit tests ---

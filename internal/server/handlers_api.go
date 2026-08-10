@@ -73,6 +73,7 @@ const (
 	codeCopySkippedNotApplicable = "copy_skipped_not_applicable"
 	codeEngineUnavailable        = "engine_unavailable"
 	codeJobAlreadyRunning        = "job_already_running"
+	codeJobAlreadyFinished       = "job_already_finished"
 	codeJobNotFound              = "job_not_found"
 	codeScanRunning              = "scan_running"
 	codeInternalError            = "internal_error"
