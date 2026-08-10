@@ -50,7 +50,7 @@ func TestJobManager_CompleteStatusMapping(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			jm := newJobManager(nil, 0, context.Background())
-			js, started := jm.start("job1", "/dir1", transcode.Job{}, "", "")
+			js, started := jm.start("job1", "/dir1", transcode.Job{}, jobMeta{})
 			if !started {
 				t.Fatalf("start: expected success")
 			}
@@ -90,7 +90,7 @@ func TestJobManager_CompleteStatusMapping(t *testing.T) {
 func TestJobState_MetadataPersistence(t *testing.T) {
 	jm := newJobManager(nil, 0, context.Background())
 	job := transcode.Job{ID: "job1", SourceDir: "/dir1"}
-	js, started := jm.start("job1", "/dir1", job, "album1", "flac -> opus/Music Balanced")
+	js, started := jm.start("job1", "/dir1", job, jobMeta{title: "album1", sub: "flac -> opus/Music Balanced"})
 	if !started {
 		t.Fatalf("start: expected success")
 	}
@@ -128,7 +128,7 @@ func TestJobState_MetadataPersistence(t *testing.T) {
 // collapse of subsMu into jobManager.mu introduced no unsynchronized access.
 func TestJobState_LatestRaceFree(t *testing.T) {
 	jm := newJobManager(nil, 0, context.Background())
-	js, started := jm.start("job1", "/dir1", transcode.Job{}, "", "")
+	js, started := jm.start("job1", "/dir1", transcode.Job{}, jobMeta{})
 	if !started {
 		t.Fatalf("start: expected success")
 	}
@@ -232,10 +232,10 @@ func TestJobManager_WorkersOneSerializes(t *testing.T) {
 	jm := newJobManager(eng, 1, context.Background())
 	t.Cleanup(jm.Shutdown)
 
-	if _, started := jm.start("job1", "/dir1", transcode.Job{ID: "job1"}, "t1", "s1"); !started {
+	if _, started := jm.start("job1", "/dir1", transcode.Job{ID: "job1"}, jobMeta{title: "t1", sub: "s1"}); !started {
 		t.Fatalf("start job1: expected success")
 	}
-	if _, started := jm.start("job2", "/dir2", transcode.Job{ID: "job2"}, "t2", "s2"); !started {
+	if _, started := jm.start("job2", "/dir2", transcode.Job{ID: "job2"}, jobMeta{title: "t2", sub: "s2"}); !started {
 		t.Fatalf("start job2: expected success")
 	}
 
@@ -267,10 +267,10 @@ func TestJobManager_WorkersTwoConcurrent(t *testing.T) {
 	jm := newJobManager(eng, 2, context.Background())
 	t.Cleanup(jm.Shutdown)
 
-	if _, started := jm.start("job1", "/dir1", transcode.Job{ID: "job1"}, "t1", "s1"); !started {
+	if _, started := jm.start("job1", "/dir1", transcode.Job{ID: "job1"}, jobMeta{title: "t1", sub: "s1"}); !started {
 		t.Fatalf("start job1: expected success")
 	}
-	if _, started := jm.start("job2", "/dir2", transcode.Job{ID: "job2"}, "t2", "s2"); !started {
+	if _, started := jm.start("job2", "/dir2", transcode.Job{ID: "job2"}, jobMeta{title: "t2", sub: "s2"}); !started {
 		t.Fatalf("start job2: expected success")
 	}
 
@@ -315,7 +315,7 @@ func TestJobManager_CompleteOnlyAfterFanoutDrains(t *testing.T) {
 	t.Cleanup(jm.Shutdown)
 
 	job := transcode.Job{ID: "job1", Preset: transcode.Preset{Codec: transcode.CodecOpus, Name: "Balanced"}}
-	js, started := jm.start("job1", "/dir1", job, "t1", "s1")
+	js, started := jm.start("job1", "/dir1", job, jobMeta{title: "t1", sub: "s1"})
 	if !started {
 		t.Fatalf("start: expected success")
 	}
@@ -350,7 +350,7 @@ func TestJobManager_OrderPreserved(t *testing.T) {
 	ids := []string{"job1", "job2", "job3"}
 	for i, id := range ids {
 		dir := fmt.Sprintf("/dir%d", i)
-		if _, started := jm.start(id, dir, transcode.Job{ID: id}, id, ""); !started {
+		if _, started := jm.start(id, dir, transcode.Job{ID: id}, jobMeta{title: id}); !started {
 			t.Fatalf("start %s: expected success", id)
 		}
 	}
@@ -401,7 +401,7 @@ func TestJobManager_WorkersExitOnShutdown(t *testing.T) {
 
 		jm := newJobManager(&ctxEngine{}, 2, ctx)
 
-		if _, started := jm.start("job1", "/dir1", transcode.Job{ID: "job1"}, "t1", "s1"); !started {
+		if _, started := jm.start("job1", "/dir1", transcode.Job{ID: "job1"}, jobMeta{title: "t1", sub: "s1"}); !started {
 			t.Fatalf("start: expected success")
 		}
 		waitForJobStatus(t, jm, "job1", JobStatusRunning, 2*time.Second)
@@ -448,10 +448,10 @@ func TestJobManager_CancelQueued(t *testing.T) {
 	jm := newJobManager(eng, 1, context.Background())
 	t.Cleanup(jm.Shutdown)
 
-	if _, started := jm.start("job1", "/dir1", transcode.Job{ID: "job1"}, "t1", "s1"); !started {
+	if _, started := jm.start("job1", "/dir1", transcode.Job{ID: "job1"}, jobMeta{title: "t1", sub: "s1"}); !started {
 		t.Fatalf("start job1: expected success")
 	}
-	if _, started := jm.start("job2", "/dir2", transcode.Job{ID: "job2"}, "t2", "s2"); !started {
+	if _, started := jm.start("job2", "/dir2", transcode.Job{ID: "job2"}, jobMeta{title: "t2", sub: "s2"}); !started {
 		t.Fatalf("start job2: expected success")
 	}
 	waitForJobStatus(t, jm, "job1", JobStatusRunning, 2*time.Second)
@@ -520,7 +520,7 @@ func TestJobManager_CancelRunning(t *testing.T) {
 	jm := newJobManager(&ctxEngine{}, 1, context.Background())
 	t.Cleanup(jm.Shutdown)
 
-	if _, started := jm.start("job1", "/dir1", transcode.Job{ID: "job1"}, "t1", "s1"); !started {
+	if _, started := jm.start("job1", "/dir1", transcode.Job{ID: "job1"}, jobMeta{title: "t1", sub: "s1"}); !started {
 		t.Fatalf("start: expected success")
 	}
 	waitForJobStatus(t, jm, "job1", JobStatusRunning, 2*time.Second)
@@ -541,7 +541,7 @@ func TestJobManager_CancelUnknownOrFinished(t *testing.T) {
 		t.Fatalf("cancel(unknown) = %v, want cancelResultNotFound", got)
 	}
 
-	js, started := jm.start("job1", "/dir1", transcode.Job{}, "", "")
+	js, started := jm.start("job1", "/dir1", transcode.Job{}, jobMeta{})
 	if !started {
 		t.Fatalf("start: expected success")
 	}
@@ -568,7 +568,7 @@ func TestJobManager_EventsInOrder(t *testing.T) {
 		t.Fatalf("initial snapshot = %v, want empty", snapshot)
 	}
 
-	if _, started := jm.start("job1", "/dir1", transcode.Job{ID: "job1"}, "title1", "sub1"); !started {
+	if _, started := jm.start("job1", "/dir1", transcode.Job{ID: "job1"}, jobMeta{title: "title1", sub: "sub1"}); !started {
 		t.Fatalf("start: expected success")
 	}
 
@@ -604,7 +604,7 @@ func TestJobManager_EventsInOrder(t *testing.T) {
 func TestJobManager_SubscribeSnapshotAtomic(t *testing.T) {
 	jm := newJobManager(nil, 0, context.Background())
 
-	js, started := jm.start("job1", "/dir1", transcode.Job{}, "t1", "s1")
+	js, started := jm.start("job1", "/dir1", transcode.Job{}, jobMeta{title: "t1", sub: "s1"})
 	if !started {
 		t.Fatalf("start: expected success")
 	}
@@ -643,7 +643,7 @@ func TestJobManager_SlowEventSubscriberDropped(t *testing.T) {
 
 	ch, _ := jm.subscribeEventsWithSnapshot()
 
-	js, started := jm.start("job1", "/dir1", transcode.Job{}, "t1", "s1")
+	js, started := jm.start("job1", "/dir1", transcode.Job{}, jobMeta{title: "t1", sub: "s1"})
 	if !started {
 		t.Fatalf("start: expected success")
 	}
@@ -688,7 +688,7 @@ func TestJobManager_SlowEventSubscriberDropped(t *testing.T) {
 func TestJobManager_PctShapingDoneWithoutReport(t *testing.T) {
 	jm := newJobManager(nil, 0, context.Background())
 
-	js, started := jm.start("job1", "/dir1", transcode.Job{}, "t1", "s1")
+	js, started := jm.start("job1", "/dir1", transcode.Job{}, jobMeta{title: "t1", sub: "s1"})
 	if !started {
 		t.Fatalf("start: expected success")
 	}
@@ -714,13 +714,13 @@ func TestJobManager_PctShapingDoneWithoutReport(t *testing.T) {
 func TestJobManager_DoneFailedRemainListedUntilEviction(t *testing.T) {
 	jm := newJobManager(nil, 0, context.Background())
 
-	jsDone, started := jm.start("done1", "/dirA", transcode.Job{}, "", "")
+	jsDone, started := jm.start("done1", "/dirA", transcode.Job{}, jobMeta{})
 	if !started {
 		t.Fatalf("start done1: expected success")
 	}
 	jm.complete(jsDone.id, nil)
 
-	jsFailed, started := jm.start("failed1", "/dirB", transcode.Job{}, "", "")
+	jsFailed, started := jm.start("failed1", "/dirB", transcode.Job{}, jobMeta{})
 	if !started {
 		t.Fatalf("start failed1: expected success")
 	}
@@ -757,5 +757,84 @@ func TestJobManager_DoneFailedRemainListedUntilEviction(t *testing.T) {
 		if present || inOrder {
 			t.Fatalf("%s not removed from both jobs and order after eviction (jobs present=%v, in order=%v)", id, present, inOrder)
 		}
+	}
+}
+
+// TestJobManager_DetailProgress verifies that the detail payload counts
+// completed files from the engine's last progress report — the file the engine
+// is on is not yet done — while the queue event stays on overall percent.
+func TestJobManager_DetailProgress(t *testing.T) {
+	jm := newJobManager(nil, 0, context.Background())
+
+	job := transcode.Job{
+		ID:    "job1",
+		Files: []transcode.FileInfo{{Name: "01.flac"}, {Name: "02.flac"}, {Name: "03.flac"}},
+	}
+	js, started := jm.start("job1", "/dir1", job, jobMeta{title: "t1", sub: "s1"})
+	if !started {
+		t.Fatalf("start: expected success")
+	}
+
+	detail, ok := jm.detail("job1")
+	if !ok {
+		t.Fatalf("detail: job not found")
+	}
+	if detail.TotalFiles != 3 || detail.DoneFiles != 0 {
+		t.Errorf("done/total = %d/%d before any report, want 0/3", detail.DoneFiles, detail.TotalFiles)
+	}
+
+	js.updateLatest(transcode.ProgressReport{
+		CurrentFile: "03.flac", FileIndex: 2, TotalFiles: 3, FilePercent: 50,
+	})
+
+	detail, _ = jm.detail("job1")
+	if detail.DoneFiles != 2 {
+		t.Errorf("done_files = %d, want 2 (the third file is still in flight)", detail.DoneFiles)
+	}
+
+	// A done job reports every file complete even if its last report was partial.
+	jm.complete("job1", nil)
+	detail, _ = jm.detail("job1")
+	if detail.DoneFiles != 3 || detail.Pct != 100 {
+		t.Errorf("done_files/pct = %d/%v after completion, want 3/100", detail.DoneFiles, detail.Pct)
+	}
+}
+
+// TestJobManager_DetailTimestampOrdering verifies the three timestamps are
+// stamped at their own transition and in order.
+func TestJobManager_DetailTimestampOrdering(t *testing.T) {
+	block := make(chan struct{})
+	jm := newJobManager(&blockingEngine{block: block}, 1, context.Background())
+	t.Cleanup(jm.Shutdown)
+
+	if _, started := jm.start("job1", "/dir1", transcode.Job{ID: "job1"}, jobMeta{title: "t1", sub: "s1"}); !started {
+		t.Fatalf("start: expected success")
+	}
+	waitForJobStatus(t, jm, "job1", JobStatusRunning, 2*time.Second)
+	close(block)
+	waitForJobStatus(t, jm, "job1", JobStatusDone, 2*time.Second)
+
+	detail, ok := jm.detail("job1")
+	if !ok {
+		t.Fatalf("detail: job not found")
+	}
+	if detail.StartedAt == nil || detail.FinishedAt == nil {
+		t.Fatalf("started_at = %v, finished_at = %v, want both set on a finished job", detail.StartedAt, detail.FinishedAt)
+	}
+	if detail.StartedAt.Before(detail.CreatedAt) {
+		t.Errorf("started_at %v precedes created_at %v", detail.StartedAt, detail.CreatedAt)
+	}
+	if detail.FinishedAt.Before(*detail.StartedAt) {
+		t.Errorf("finished_at %v precedes started_at %v", detail.FinishedAt, detail.StartedAt)
+	}
+}
+
+// TestJobManager_DetailUnknownID verifies detail reports a miss rather than a
+// zero-valued payload.
+func TestJobManager_DetailUnknownID(t *testing.T) {
+	jm := newJobManager(nil, 0, context.Background())
+
+	if _, ok := jm.detail("nope"); ok {
+		t.Error("detail(nope) reported found, want a miss")
 	}
 }

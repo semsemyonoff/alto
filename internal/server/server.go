@@ -294,6 +294,9 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /api/cover", s.handleCover)
 	s.mux.HandleFunc("GET /api/jobs", s.handleJobs)
 	s.mux.HandleFunc("GET /api/jobs/events", s.handleJobEvents)
+	// More specific than the {id} wildcard below, so /api/jobs/events keeps
+	// routing to the SSE stream.
+	s.mux.HandleFunc("GET /api/jobs/{id}", s.handleJob)
 	s.mux.HandleFunc("POST /api/jobs/{id}/cancel", s.handleJobCancel)
 	s.mux.HandleFunc("POST /api/jobs/{id}/remove", s.handleJobRemove)
 	s.mux.HandleFunc("GET /api/version", s.handleVersion)

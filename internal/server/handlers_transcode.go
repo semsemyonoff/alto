@@ -212,9 +212,10 @@ func (s *Server) handleTranscodeStart(w http.ResponseWriter, r *http.Request) {
 		resolvedLibRoot = filepath.Clean(lib.Path)
 	}
 
-	// Validate the output directory before starting the job.
+	// Validate the output directory before starting the job. In replace mode the
+	// sources are rewritten in place, so the source directory is the destination.
+	outDir := resolved
 	if outputMode != transcode.OutputReplace {
-		var outDir string
 		switch outputMode {
 		case transcode.OutputShared:
 			if s.cfg.OutputDir == "" {
@@ -253,7 +254,12 @@ func (s *Server) handleTranscodeStart(w http.ResponseWriter, r *http.Request) {
 	// selected set: on a mixed directory tracks[0] can be a track the job skips.
 	sub := fmt.Sprintf("%s → %s/%s", selected[0].Codec, preset.Codec, preset.Name)
 
-	js, started := s.jobs.start(id, resolved, job, title, sub)
+	js, started := s.jobs.start(id, resolved, job, jobMeta{
+		title:     title,
+		sub:       sub,
+		outputDir: outDir,
+		skipped:   skipped,
+	})
 	if !started {
 		writeAPIError(w, http.StatusConflict, codeJobAlreadyRunning,
 			"a transcode job is already running for this directory",
@@ -306,6 +312,25 @@ func writeSelectionError(w http.ResponseWriter, err error) {
 // GET /api/jobs
 func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"jobs": s.jobs.snapshotJobs()})
+}
+
+// handleJob returns the full detail payload for a single job, including the
+// resolved selection, the output directory and the failure reason — none of
+// which ride on the queue-panel event stream.
+// GET /api/jobs/{id}
+func (s *Server) handleJob(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeAPIError(w, http.StatusBadRequest, codeInvalidRequest, "job ID required", nil)
+		return
+	}
+
+	detail, ok := s.jobs.detail(id)
+	if !ok {
+		writeAPIError(w, http.StatusNotFound, codeJobNotFound, "job not found", nil)
+		return
+	}
+	writeJSON(w, http.StatusOK, detail)
 }
 
 // handleJobEvents streams the global queue-panel event feed via SSE: it

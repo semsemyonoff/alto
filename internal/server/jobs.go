@@ -77,6 +77,23 @@ type jobState struct {
 	title string
 	sub   string
 
+	// outputDir is the destination the job resolved to, and skipped names the
+	// tracks the selection left behind. Both are reported by GET /api/jobs/{id}
+	// only — never on the broadcast jobEvent.
+	outputDir string
+	skipped   []skippedDTO
+
+	// createdAt is stamped at registration; startedAt when a worker picks the
+	// job up; finishedAt when it reaches a terminal status. The last two stay
+	// nil until then.
+	createdAt  time.Time
+	startedAt  *time.Time
+	finishedAt *time.Time
+
+	// evicted marks a job dropped from the queue list but still answerable by
+	// GET /api/jobs/{id}.
+	evicted bool
+
 	// job is the transcode.Job this jobState was started with.
 	job transcode.Job
 
@@ -131,6 +148,40 @@ type jobEvent struct {
 	Removed bool `json:"removed,omitempty"`
 }
 
+// jobDetailDTO is the body of GET /api/jobs/{id}. It is deliberately separate
+// from jobEvent: jobEvent is broadcast on every ffmpeg progress line to every
+// open tab, so it must stay small, while this payload is O(tracks) and costs
+// one request.
+type jobDetailDTO struct {
+	ID     string    `json:"id"`
+	Status JobStatus `json:"status"`
+	Pct    float64   `json:"pct"`
+	Title  string    `json:"title"`
+	Sub    string    `json:"sub"`
+	Dir    string    `json:"dir"`
+	// Error carries the engine's failure reason, so a failed job is diagnosable
+	// without a second call to the log endpoint. Empty unless status is failed.
+	Error      string       `json:"error"`
+	OutputDir  string       `json:"output_dir"`
+	Files      []string     `json:"files"`
+	Skipped    []skippedDTO `json:"skipped"`
+	TotalFiles int          `json:"total_files"`
+	DoneFiles  int          `json:"done_files"`
+	CreatedAt  time.Time    `json:"created_at"`
+	StartedAt  *time.Time   `json:"started_at"`
+	FinishedAt *time.Time   `json:"finished_at"`
+	Evicted    bool         `json:"evicted"`
+}
+
+// jobMeta carries the per-job data the queue keeps beyond the transcode.Job
+// itself: display strings for the queue panel plus the detail-endpoint fields.
+type jobMeta struct {
+	title     string
+	sub       string
+	outputDir string
+	skipped   []skippedDTO
+}
+
 // jobManager tracks all active and recently completed transcoding jobs and
 // dispatches queued jobs to a bounded pool of workers.
 type jobManager struct {
@@ -176,6 +227,61 @@ func (jm *jobManager) eventForLocked(js *jobState) jobEvent {
 		Sub:    js.sub,
 		Dir:    js.dirPath,
 	}
+}
+
+// calcDoneFiles reports how many of the job's files are fully transcoded: a
+// done job has finished all of them, otherwise the engine's last report names
+// the file it is on and everything before it is complete. Callers must hold jm.mu.
+func calcDoneFiles(js *jobState) int {
+	total := len(js.job.Files)
+	if js.status == JobStatusDone {
+		return total
+	}
+	if js.latest == nil {
+		return 0
+	}
+	return js.latest.FileIndex
+}
+
+// detailForLocked builds the jobDetailDTO for js. Callers must hold jm.mu.
+func (jm *jobManager) detailForLocked(js *jobState) jobDetailDTO {
+	files := make([]string, 0, len(js.job.Files))
+	for _, fi := range js.job.Files {
+		files = append(files, fi.Name)
+	}
+	skipped := js.skipped
+	if skipped == nil {
+		skipped = []skippedDTO{}
+	}
+	return jobDetailDTO{
+		ID:         js.id,
+		Status:     js.status,
+		Pct:        calcJobPercent(js),
+		Title:      js.title,
+		Sub:        js.sub,
+		Dir:        js.dirPath,
+		Error:      js.errMsg,
+		OutputDir:  js.outputDir,
+		Files:      files,
+		Skipped:    skipped,
+		TotalFiles: len(js.job.Files),
+		DoneFiles:  calcDoneFiles(js),
+		CreatedAt:  js.createdAt,
+		StartedAt:  js.startedAt,
+		FinishedAt: js.finishedAt,
+		Evicted:    js.evicted,
+	}
+}
+
+// detail returns the detail payload for id, or false if no such job is tracked.
+func (jm *jobManager) detail(id string) (jobDetailDTO, bool) {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	js, ok := jm.jobs[id]
+	if !ok {
+		return jobDetailDTO{}, false
+	}
+	return jm.detailForLocked(js), true
 }
 
 // snapshotEvent returns the current jobEvent for id, or false if the job is
@@ -286,7 +392,7 @@ func newJobManager(engine TranscodeEngine, workers int, parentCtx context.Contex
 // start registers a new job as queued. Returns the new jobState and true on
 // success, or the conflicting jobState and false when that directory is
 // already queued or transcoding.
-func (jm *jobManager) start(id, dirPath string, job transcode.Job, title, sub string) (*jobState, bool) {
+func (jm *jobManager) start(id, dirPath string, job transcode.Job, meta jobMeta) (*jobState, bool) {
 	jm.mu.Lock()
 	if existingID, busy := jm.byDir[dirPath]; busy {
 		js := jm.jobs[existingID]
@@ -294,16 +400,19 @@ func (jm *jobManager) start(id, dirPath string, job transcode.Job, title, sub st
 		return js, false
 	}
 	js := &jobState{
-		id:       id,
-		dirPath:  dirPath,
-		jm:       jm,
-		title:    title,
-		sub:      sub,
-		job:      job,
-		status:   JobStatusQueued,
-		progress: make(chan transcode.ProgressReport, 64),
-		log:      newRingBuffer(1000),
-		done:     make(chan struct{}),
+		id:        id,
+		dirPath:   dirPath,
+		jm:        jm,
+		title:     meta.title,
+		sub:       meta.sub,
+		outputDir: meta.outputDir,
+		skipped:   meta.skipped,
+		createdAt: time.Now(),
+		job:       job,
+		status:    JobStatusQueued,
+		progress:  make(chan transcode.ProgressReport, 64),
+		log:       newRingBuffer(1000),
+		done:      make(chan struct{}),
 	}
 	jm.jobs[id] = js
 	jm.byDir[dirPath] = id
@@ -357,6 +466,8 @@ func (jm *jobManager) workerLoop(parentCtx context.Context) {
 		}
 		js := jm.jobs[id]
 		js.status = JobStatusRunning
+		startedAt := time.Now()
+		js.startedAt = &startedAt
 		ctx, cancel := context.WithCancel(parentCtx)
 		js.cancel = cancel
 		job := js.job
@@ -419,6 +530,8 @@ func (jm *jobManager) complete(id string, err error) {
 			js.status = JobStatusFailed
 			js.errMsg = err.Error()
 		}
+		finishedAt := time.Now()
+		js.finishedAt = &finishedAt
 		delete(jm.byDir, js.dirPath)
 		jm.broadcastEventLocked(jm.eventForLocked(js))
 	}
@@ -455,6 +568,8 @@ func (jm *jobManager) cancel(id string) cancelResult {
 	switch js.status {
 	case JobStatusQueued:
 		js.status = JobStatusCanceled
+		finishedAt := time.Now()
+		js.finishedAt = &finishedAt
 		delete(jm.byDir, js.dirPath)
 		close(js.done)
 		jm.broadcastEventLocked(jm.eventForLocked(js))

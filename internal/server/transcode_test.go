@@ -1205,7 +1205,7 @@ func TestHandleTranscodeLog_JobNotFound(t *testing.T) {
 func TestHandleTranscodeLog_InvalidN(t *testing.T) {
 	jm := newJobManager(nil, 0, context.Background())
 	srv := &Server{jobs: jm}
-	if _, started := jm.start("job1", "/dir1", transcode.Job{ID: "job1"}, "t1", "s1"); !started {
+	if _, started := jm.start("job1", "/dir1", transcode.Job{ID: "job1"}, jobMeta{title: "t1", sub: "s1"}); !started {
 		t.Fatalf("start: expected success")
 	}
 
@@ -1336,21 +1336,21 @@ func TestHandleJobs_MixedStatus(t *testing.T) {
 
 	// job1: queued, then completed successfully — pct must show 100 even
 	// though no progress report ever arrived.
-	js1, started := jm.start("job1", "/dir1", transcode.Job{ID: "job1"}, "Album One", "flac -> opus/Balanced")
+	js1, started := jm.start("job1", "/dir1", transcode.Job{ID: "job1"}, jobMeta{title: "Album One", sub: "flac -> opus/Balanced"})
 	if !started {
 		t.Fatalf("start job1: expected success")
 	}
 	jm.complete(js1.id, nil)
 
 	// job2: queued, then failed.
-	js2, started := jm.start("job2", "/dir2", transcode.Job{ID: "job2"}, "Album Two", "flac -> opus/Balanced")
+	js2, started := jm.start("job2", "/dir2", transcode.Job{ID: "job2"}, jobMeta{title: "Album Two", sub: "flac -> opus/Balanced"})
 	if !started {
 		t.Fatalf("start job2: expected success")
 	}
 	jm.complete(js2.id, errors.New("boom"))
 
 	// job3: canceled while still queued.
-	if _, started := jm.start("job3", "/dir3", transcode.Job{ID: "job3"}, "Album Three", "flac -> opus/Balanced"); !started {
+	if _, started := jm.start("job3", "/dir3", transcode.Job{ID: "job3"}, jobMeta{title: "Album Three", sub: "flac -> opus/Balanced"}); !started {
 		t.Fatalf("start job3: expected success")
 	}
 	if result := jm.cancel("job3"); result != cancelResultCanceled {
@@ -1358,7 +1358,7 @@ func TestHandleJobs_MixedStatus(t *testing.T) {
 	}
 
 	// job4: still queued.
-	if _, started := jm.start("job4", "/dir4", transcode.Job{ID: "job4"}, "Album Four", "flac -> opus/Balanced"); !started {
+	if _, started := jm.start("job4", "/dir4", transcode.Job{ID: "job4"}, jobMeta{title: "Album Four", sub: "flac -> opus/Balanced"}); !started {
 		t.Fatalf("start job4: expected success")
 	}
 
@@ -1413,7 +1413,7 @@ func TestHandleJobEvents_SnapshotThenLiveDelta(t *testing.T) {
 
 	// job1 is registered before the subscription starts, so it must appear in
 	// the initial snapshot burst.
-	if _, started := jm.start("job1", "/dir1", transcode.Job{ID: "job1"}, "Album One", "flac -> opus/Balanced"); !started {
+	if _, started := jm.start("job1", "/dir1", transcode.Job{ID: "job1"}, jobMeta{title: "Album One", sub: "flac -> opus/Balanced"}); !started {
 		t.Fatalf("start job1: expected success")
 	}
 
@@ -1432,7 +1432,7 @@ func TestHandleJobEvents_SnapshotThenLiveDelta(t *testing.T) {
 
 	// job2 is registered after the subscription starts, so it must arrive as a
 	// live delta rather than in the snapshot.
-	if _, started := jm.start("job2", "/dir2", transcode.Job{ID: "job2"}, "Album Two", "flac -> opus/Balanced"); !started {
+	if _, started := jm.start("job2", "/dir2", transcode.Job{ID: "job2"}, jobMeta{title: "Album Two", sub: "flac -> opus/Balanced"}); !started {
 		t.Fatalf("start job2: expected success")
 	}
 
@@ -1510,10 +1510,10 @@ func TestHandleJobCancel_Queued(t *testing.T) {
 	t.Cleanup(jm.Shutdown)
 	srv := &Server{jobs: jm}
 
-	if _, started := jm.start("job1", "/dir1", transcode.Job{ID: "job1"}, "t1", "s1"); !started {
+	if _, started := jm.start("job1", "/dir1", transcode.Job{ID: "job1"}, jobMeta{title: "t1", sub: "s1"}); !started {
 		t.Fatalf("start job1: expected success")
 	}
-	if _, started := jm.start("job2", "/dir2", transcode.Job{ID: "job2"}, "t2", "s2"); !started {
+	if _, started := jm.start("job2", "/dir2", transcode.Job{ID: "job2"}, jobMeta{title: "t2", sub: "s2"}); !started {
 		t.Fatalf("start job2: expected success")
 	}
 	waitForJobStatus(t, jm, "job1", JobStatusRunning, 2*time.Second)
@@ -1538,7 +1538,7 @@ func TestHandleJobCancel_Running(t *testing.T) {
 	t.Cleanup(jm.Shutdown)
 	srv := &Server{jobs: jm}
 
-	if _, started := jm.start("job1", "/dir1", transcode.Job{ID: "job1"}, "t1", "s1"); !started {
+	if _, started := jm.start("job1", "/dir1", transcode.Job{ID: "job1"}, jobMeta{title: "t1", sub: "s1"}); !started {
 		t.Fatalf("start: expected success")
 	}
 	waitForJobStatus(t, jm, "job1", JobStatusRunning, 2*time.Second)
@@ -1570,7 +1570,7 @@ func TestHandleJobCancel_AlreadyFinished(t *testing.T) {
 	jm := newJobManager(nil, 0, context.Background())
 	srv := &Server{jobs: jm}
 
-	js, started := jm.start("job1", "/dir1", transcode.Job{ID: "job1"}, "t1", "s1")
+	js, started := jm.start("job1", "/dir1", transcode.Job{ID: "job1"}, jobMeta{title: "t1", sub: "s1"})
 	if !started {
 		t.Fatalf("start: expected success")
 	}
@@ -1601,7 +1601,7 @@ func TestHandleJobRemove_Terminal(t *testing.T) {
 	jm := newJobManager(nil, 0, context.Background())
 	srv := &Server{jobs: jm}
 
-	js, started := jm.start("job1", "/dir1", transcode.Job{ID: "job1"}, "t1", "s1")
+	js, started := jm.start("job1", "/dir1", transcode.Job{ID: "job1"}, jobMeta{title: "t1", sub: "s1"})
 	if !started {
 		t.Fatalf("start: expected success")
 	}
@@ -1632,7 +1632,7 @@ func TestHandleJobRemove_StillActive(t *testing.T) {
 	jm := newJobManager(nil, 0, context.Background())
 	srv := &Server{jobs: jm}
 
-	if _, started := jm.start("job1", "/dir1", transcode.Job{ID: "job1"}, "t1", "s1"); !started {
+	if _, started := jm.start("job1", "/dir1", transcode.Job{ID: "job1"}, jobMeta{title: "t1", sub: "s1"}); !started {
 		t.Fatalf("start: expected success")
 	}
 
@@ -1773,5 +1773,354 @@ func TestCalcOverallPercent(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("calcOverallPercent(%+v) = %v, want %v", tc.p, got, tc.want)
 		}
+	}
+}
+
+// --- GET /api/jobs/{id} ---
+
+// getJobDetail calls handleJob for id and returns the recorder.
+func getJobDetail(t *testing.T, srv *Server, id string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/api/jobs/"+id, nil)
+	req.SetPathValue("id", id)
+	w := httptest.NewRecorder()
+	srv.handleJob(w, req)
+	return w
+}
+
+// decodeJobDetail decodes a 200 detail body, failing the test on any other status.
+func decodeJobDetail(t *testing.T, w *httptest.ResponseRecorder) jobDetailDTO {
+	t.Helper()
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	var got jobDetailDTO
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode detail body %q: %v", w.Body.String(), err)
+	}
+	return got
+}
+
+// twoFileJob is a job descriptor with two files, so total/done counts are
+// distinguishable from zero.
+func twoFileJob(id string) transcode.Job {
+	return transcode.Job{
+		ID:    id,
+		Files: []transcode.FileInfo{{Name: "01.flac"}, {Name: "02.flac"}},
+	}
+}
+
+// TestHandleJob_Lifecycle asserts the detail payload across every job status,
+// including that a failed job carries the engine's error text — so a client
+// never has to fetch the log endpoint to learn why a job failed.
+func TestHandleJob_Lifecycle(t *testing.T) {
+	cases := []struct {
+		name  string
+		setup func(t *testing.T) *Server
+		check func(t *testing.T, got jobDetailDTO)
+	}{
+		{
+			name: "queued",
+			setup: func(t *testing.T) *Server {
+				jm := newJobManager(nil, 0, context.Background())
+				if _, ok := jm.start("job1", "/dir1", twoFileJob("job1"), jobMeta{title: "Album", sub: "flac → opus/Balanced"}); !ok {
+					t.Fatalf("start: expected success")
+				}
+				return &Server{jobs: jm}
+			},
+			check: func(t *testing.T, got jobDetailDTO) {
+				if got.Status != JobStatusQueued || got.Pct != 0 || got.DoneFiles != 0 {
+					t.Errorf("got %+v, want queued at 0%% with 0 done files", got)
+				}
+				if got.StartedAt != nil || got.FinishedAt != nil {
+					t.Errorf("started_at = %v, finished_at = %v, want both null while queued", got.StartedAt, got.FinishedAt)
+				}
+			},
+		},
+		{
+			name: "running",
+			setup: func(t *testing.T) *Server {
+				block := make(chan struct{})
+				jm := newJobManager(&blockingEngine{block: block}, 1, context.Background())
+				t.Cleanup(func() {
+					close(block)
+					jm.Shutdown()
+				})
+				if _, ok := jm.start("job1", "/dir1", twoFileJob("job1"), jobMeta{title: "Album", sub: "flac → opus/Balanced"}); !ok {
+					t.Fatalf("start: expected success")
+				}
+				waitForJobStatus(t, jm, "job1", JobStatusRunning, 2*time.Second)
+				return &Server{jobs: jm}
+			},
+			check: func(t *testing.T, got jobDetailDTO) {
+				if got.Status != JobStatusRunning {
+					t.Errorf("status = %q, want running", got.Status)
+				}
+				if got.StartedAt == nil {
+					t.Error("started_at = null, want a timestamp once a worker picked the job up")
+				}
+				if got.FinishedAt != nil {
+					t.Errorf("finished_at = %v, want null while running", got.FinishedAt)
+				}
+			},
+		},
+		{
+			name: "done",
+			setup: func(t *testing.T) *Server {
+				jm := newJobManager(nil, 0, context.Background())
+				if _, ok := jm.start("job1", "/dir1", twoFileJob("job1"), jobMeta{title: "Album", sub: "flac → opus/Balanced"}); !ok {
+					t.Fatalf("start: expected success")
+				}
+				jm.complete("job1", nil)
+				return &Server{jobs: jm}
+			},
+			check: func(t *testing.T, got jobDetailDTO) {
+				if got.Status != JobStatusDone || got.Pct != 100 {
+					t.Errorf("got %+v, want done at 100%%", got)
+				}
+				if got.DoneFiles != got.TotalFiles || got.TotalFiles != 2 {
+					t.Errorf("done_files/total_files = %d/%d, want 2/2", got.DoneFiles, got.TotalFiles)
+				}
+				if got.Error != "" {
+					t.Errorf("error = %q, want empty on a successful job", got.Error)
+				}
+				if got.FinishedAt == nil {
+					t.Error("finished_at = null, want a timestamp on a terminal job")
+				}
+			},
+		},
+		{
+			name: "failed",
+			setup: func(t *testing.T) *Server {
+				jm := newJobManager(nil, 0, context.Background())
+				if _, ok := jm.start("job1", "/dir1", twoFileJob("job1"), jobMeta{title: "Album", sub: "flac → opus/Balanced"}); !ok {
+					t.Fatalf("start: expected success")
+				}
+				jm.complete("job1", errors.New("ffmpeg exited 1"))
+				return &Server{jobs: jm}
+			},
+			check: func(t *testing.T, got jobDetailDTO) {
+				if got.Status != JobStatusFailed {
+					t.Errorf("status = %q, want failed", got.Status)
+				}
+				if got.Error != "ffmpeg exited 1" {
+					t.Errorf("error = %q, want the engine's failure reason", got.Error)
+				}
+			},
+		},
+		{
+			name: "canceled while queued",
+			setup: func(t *testing.T) *Server {
+				jm := newJobManager(nil, 0, context.Background())
+				if _, ok := jm.start("job1", "/dir1", twoFileJob("job1"), jobMeta{title: "Album", sub: "flac → opus/Balanced"}); !ok {
+					t.Fatalf("start: expected success")
+				}
+				if res := jm.cancel("job1"); res != cancelResultCanceled {
+					t.Fatalf("cancel = %v, want canceled", res)
+				}
+				return &Server{jobs: jm}
+			},
+			check: func(t *testing.T, got jobDetailDTO) {
+				if got.Status != JobStatusCanceled {
+					t.Errorf("status = %q, want canceled", got.Status)
+				}
+				if got.StartedAt != nil {
+					t.Errorf("started_at = %v, want null for a job canceled before it ran", got.StartedAt)
+				}
+				if got.FinishedAt == nil {
+					t.Error("finished_at = null, want a timestamp on a canceled job")
+				}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := tc.setup(t)
+			got := decodeJobDetail(t, getJobDetail(t, srv, "job1"))
+
+			if got.ID != "job1" || got.Title != "Album" || got.Sub != "flac → opus/Balanced" || got.Dir != "/dir1" {
+				t.Errorf("identity fields = %+v, want id/title/sub/dir of the started job", got)
+			}
+			if got.TotalFiles != 2 {
+				t.Errorf("total_files = %d, want 2", got.TotalFiles)
+			}
+			if !reflect.DeepEqual(got.Files, []string{"01.flac", "02.flac"}) {
+				t.Errorf("files = %v, want the job's file names", got.Files)
+			}
+			if got.Skipped == nil {
+				t.Error("skipped = null, want an empty array")
+			}
+			if got.CreatedAt.IsZero() {
+				t.Error("created_at is zero, want the registration timestamp")
+			}
+			if got.Evicted {
+				t.Error("evicted = true, want false for a listed job")
+			}
+			tc.check(t, got)
+		})
+	}
+}
+
+func TestHandleJob_NotFound(t *testing.T) {
+	srv := &Server{jobs: newJobManager(nil, 0, context.Background())}
+
+	assertAPIError(t, getJobDetail(t, srv, "nope"), http.StatusNotFound, codeJobNotFound)
+}
+
+func TestHandleJob_MissingID(t *testing.T) {
+	srv := &Server{jobs: newJobManager(nil, 0, context.Background())}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/jobs/", nil)
+	w := httptest.NewRecorder()
+	srv.handleJob(w, req)
+
+	assertAPIError(t, w, http.StatusBadRequest, codeInvalidRequest)
+}
+
+// TestHandleJob_ReportsSelectionAndOutputDir drives a real skip_lossy request
+// through the handler and asserts the detail endpoint reproduces the resolved
+// selection and destination, so an agent can confirm what a job will produce
+// without having kept the 202 body.
+func TestHandleJob_ReportsSelectionAndOutputDir(t *testing.T) {
+	srv, dir := newTestServerWithDirTracks(t, &mockEngine{}, mixedTracks)
+
+	w := postTranscode(t, srv, map[string]any{
+		"path": dir, "preset": "Balanced", "skip_lossy": true, "copy_skipped": true,
+	})
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("start status = %d, want 202: %s", w.Code, w.Body.String())
+	}
+	var accepted transcodeAcceptedDTO
+	if err := json.Unmarshal(w.Body.Bytes(), &accepted); err != nil {
+		t.Fatalf("decode 202 body: %v", err)
+	}
+
+	got := decodeJobDetail(t, getJobDetail(t, srv, accepted.JobID))
+
+	if !reflect.DeepEqual(got.Files, []string{"01.flac", "03.flac"}) {
+		t.Errorf("files = %v, want the lossless selection", got.Files)
+	}
+	wantSkipped := []skippedDTO{{Name: "02.mp3", Codec: "mp3", Reason: skipReasonLossy}}
+	if !reflect.DeepEqual(got.Skipped, wantSkipped) {
+		t.Errorf("skipped = %+v, want %+v", got.Skipped, wantSkipped)
+	}
+	wantOut := filepath.Join(srv.cfg.OutputDir, "TestLib", "album1")
+	if got.OutputDir != wantOut {
+		t.Errorf("output_dir = %q, want %q", got.OutputDir, wantOut)
+	}
+}
+
+// TestHandleJob_OutputDirForReplaceMode pins the one mode whose destination is
+// not under OutputDir: replace rewrites the sources in place.
+func TestHandleJob_OutputDirForReplaceMode(t *testing.T) {
+	srv, dir := newTestServerWithDirTracks(t, &mockEngine{}, flacTracks)
+
+	w := postTranscode(t, srv, map[string]any{
+		"path": dir, "preset": "Balanced", "output_mode": "replace",
+	})
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("start status = %d, want 202: %s", w.Code, w.Body.String())
+	}
+	var accepted transcodeAcceptedDTO
+	if err := json.Unmarshal(w.Body.Bytes(), &accepted); err != nil {
+		t.Fatalf("decode 202 body: %v", err)
+	}
+
+	got := decodeJobDetail(t, getJobDetail(t, srv, accepted.JobID))
+
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatalf("EvalSymlinks: %v", err)
+	}
+	if got.OutputDir != resolved {
+		t.Errorf("output_dir = %q, want the source directory %q", got.OutputDir, resolved)
+	}
+}
+
+// TestJobEventPayloadUnchanged pins the queue-panel wire format: the detail
+// fields added for GET /api/jobs/{id} must not leak into GET /api/jobs or the
+// SSE stream, which broadcast one event per ffmpeg progress line to every tab.
+func TestJobEventPayloadUnchanged(t *testing.T) {
+	jm := newJobManager(nil, 0, context.Background())
+	srv := &Server{jobs: jm}
+
+	meta := jobMeta{
+		title:     "Album One",
+		sub:       "flac → opus/Balanced",
+		outputDir: "/out/TestLib/album1",
+		skipped:   []skippedDTO{{Name: "02.mp3", Codec: "mp3", Reason: skipReasonLossy}},
+	}
+	if _, ok := jm.start("job1", "/dir1", twoFileJob("job1"), meta); !ok {
+		t.Fatalf("start: expected success")
+	}
+
+	const wantEvent = `{"id":"job1","status":"queued","pct":0,"title":"Album One","sub":"flac → opus/Balanced","dir":"/dir1"}`
+
+	req := httptest.NewRequest(http.MethodGet, "/api/jobs", nil)
+	w := httptest.NewRecorder()
+	srv.handleJobs(w, req)
+	if got := strings.TrimSpace(w.Body.String()); got != `{"jobs":[`+wantEvent+`]}` {
+		t.Errorf("GET /api/jobs body =\n%s\nwant\n%s", got, `{"jobs":[`+wantEvent+`]}`)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	sseReq := httptest.NewRequest(http.MethodGet, "/api/jobs/events", nil).WithContext(ctx)
+	sseW := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		srv.handleJobEvents(sseW, sseReq)
+	}()
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("SSE handler did not return after context cancel")
+	}
+
+	if got := sseW.Body.String(); got != "event: update\ndata: "+wantEvent+"\n\n" {
+		t.Errorf("SSE snapshot =\n%q\nwant\n%q", got, "event: update\ndata: "+wantEvent+"\n\n")
+	}
+}
+
+// TestJobRoutes_DetailDoesNotShadowEvents pins the routing precedence between
+// the new GET /api/jobs/{id} pattern and the SSE stream at the literal
+// /api/jobs/events, which must keep winning.
+func TestJobRoutes_DetailDoesNotShadowEvents(t *testing.T) {
+	srv, dir := newTestServerWithDirTracks(t, &mockEngine{}, flacTracks)
+
+	w := postTranscode(t, srv, map[string]any{"path": dir, "preset": "Balanced"})
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("start status = %d, want 202: %s", w.Code, w.Body.String())
+	}
+	var accepted transcodeAcceptedDTO
+	if err := json.Unmarshal(w.Body.Bytes(), &accepted); err != nil {
+		t.Fatalf("decode 202 body: %v", err)
+	}
+
+	detailW := httptest.NewRecorder()
+	srv.ServeHTTP(detailW, httptest.NewRequest(http.MethodGet, "/api/jobs/"+accepted.JobID, nil))
+	if got := decodeJobDetail(t, detailW).ID; got != accepted.JobID {
+		t.Errorf("detail id = %q, want %q", got, accepted.JobID)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	eventsW := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		srv.ServeHTTP(eventsW, httptest.NewRequest(http.MethodGet, "/api/jobs/events", nil).WithContext(ctx))
+	}()
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("SSE handler did not return after context cancel")
+	}
+	if got := eventsW.Body.String(); !strings.HasPrefix(got, "event: update\ndata: ") {
+		t.Errorf("/api/jobs/events body = %q, want the SSE stream, not a job detail payload", got)
 	}
 }
