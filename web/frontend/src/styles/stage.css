@@ -135,6 +135,38 @@
   box-shadow: inset 3px 0 0 var(--teal);
 }
 
+.col-sel {
+  width: 34px;
+  text-align: center;
+}
+
+.sel-box {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  vertical-align: middle;
+  accent-color: var(--teal);
+  cursor: pointer;
+}
+
+.sel-box:disabled {
+  cursor: not-allowed;
+  opacity: 0.35;
+}
+
+/* Marks a track the transcoder refuses as a source; its checkbox is disabled. */
+.lossy-badge {
+  font-family: var(--fm);
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 1px 4px;
+  border-radius: 4px;
+  border: 1px solid color-mix(in srgb, #e6a95c 38%, transparent);
+  background: color-mix(in srgb, #e6a95c 11%, transparent);
+  color: #e6a95c;
+}
+
 .col-num {
   width: 34px;
   text-align: right;

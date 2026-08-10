@@ -403,8 +403,15 @@
     display: none;
   }
 
+  /* The selection checkbox is the only interaction point in the table, so it
+     stays at every breakpoint; the index column pays for it instead — it merely
+     repeats the leading number of the filename beside it. */
   .col-num {
-    width: 26px;
+    display: none;
+  }
+
+  .col-sel {
+    width: 30px;
   }
 
   .col-filename {

@@ -5,6 +5,7 @@ import { altoDock } from './dock'
 import { altoLibMenu } from './libmenu'
 import { initMobileControls, syncSelection } from './mobile'
 import { altoQueue } from './queue'
+import { readSelectionConfig, selectionStore, type SelectionStore } from './selection'
 import { altoTreeSearch } from './treesearch'
 import { initSidebarResizer } from './ui/resizer'
 import './styles/index.css'
@@ -32,6 +33,16 @@ Alpine.store('jobs', {
     return !!dir && this.activeDirs.includes(dir)
   },
 })
+
+// Per-track transcode selection, shared between the track table (checkboxes) and
+// the dock (which turns it into the request's `files` list). Rebuilt from the
+// page's inline #tc-tracks-data whenever the directory changes.
+Alpine.store('selection', selectionStore())
+
+function syncSelectionStore(): void {
+  const config = readSelectionConfig(document)
+  ;(Alpine.store('selection') as SelectionStore).init(config.path, config.tracks)
+}
 
 Alpine.data('altoDock', altoDock)
 Alpine.data('altoLibMenu', altoLibMenu)
@@ -78,6 +89,7 @@ document.addEventListener('htmx:afterSwap', (event) => {
   const el = swapTarget as HTMLElement | null
   const isContentSwap = el?.id === 'content-area' || !!el?.closest?.('#content-area')
   syncSelection(document.getElementById('content-area'), isContentSwap)
+  syncSelectionStore()
 })
 
 // Restoring a page from htmx's history cache (back/forward) drops the swapped-in
@@ -87,9 +99,11 @@ document.addEventListener('htmx:afterSwap', (event) => {
 document.addEventListener('htmx:historyRestore', () => {
   reinitAlpineOnSwap(Alpine, document.getElementById('content-area'))
   syncSelection(document.getElementById('content-area'))
+  syncSelectionStore()
 })
 
 initSidebarResizer()
 initMobileControls()
 syncSelection(document.getElementById('content-area'))
+syncSelectionStore()
 Alpine.start()

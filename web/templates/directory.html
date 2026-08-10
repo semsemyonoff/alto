@@ -31,6 +31,12 @@
     <table class="tracks-table">
       <thead>
         <tr>
+          <th class="col-sel">
+            <input type="checkbox" class="sel-box" aria-label="Select all lossless tracks"
+                   :checked="$store.selection.allSelected"
+                   :disabled="$store.selection.losslessCount === 0"
+                   @change="$store.selection.toggleAll()">
+          </th>
           <th class="col-num">#</th>
           <th class="col-filename">Filename</th>
           <th class="col-codec">Codec</th>
@@ -44,9 +50,19 @@
       <tbody>
         {{range .Tracks}}
         <tr class="track-row">
+          <td class="col-sel">
+            {{if .Lossless}}
+            <input type="checkbox" class="sel-box" data-name="{{.Filename}}" aria-label="Select {{.Filename}}"
+                   :checked="$store.selection.isSelected($el.dataset.name)"
+                   @change="$store.selection.toggle($el.dataset.name)">
+            {{else}}
+            <input type="checkbox" class="sel-box" disabled aria-label="{{.Filename}} is lossy and cannot be transcoded"
+                   title="Lossy source — cannot be transcoded">
+            {{end}}
+          </td>
           <td class="col-num track-num">{{.Index}}</td>
           <td class="col-filename track-filename" title="{{.Filename}}">{{.Filename}}</td>
-          <td class="col-codec track-codec">{{.Codec}}</td>
+          <td class="col-codec track-codec">{{.Codec}}{{if not .Lossless}} <span class="lossy-badge">lossy</span>{{end}}</td>
           <td class="col-bitrate track-bitrate tech">{{.Bitrate}}</td>
           <td class="col-duration track-duration">{{.Duration}}</td>
           <td class="col-samplerate track-samplerate tech">{{.SampleRate}}</td>
