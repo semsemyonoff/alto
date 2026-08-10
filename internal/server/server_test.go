@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/semsemyonoff/ALTO/internal/db"
+	"github.com/semsemyonoff/ALTO/internal/library"
 )
 
 // mockScanner implements LibraryScanner for tests.
@@ -909,6 +911,389 @@ func TestScanBroadcast_TerminalEventNotDropped(t *testing.T) {
 	}
 }
 
+// --- GET /api/scan/state, POST /api/scan/dir ---
+
+// stubProber answers every probe with fixed metadata, so a test can drive the
+// real library.Scanner without ffprobe on PATH.
+type stubProber struct{ codec string }
+
+func (p stubProber) Probe(_ context.Context, _ string) (*library.TrackInfo, error) {
+	codec := p.codec
+	if codec == "" {
+		codec = "flac"
+	}
+	return &library.TrackInfo{Codec: codec, SampleRate: 44100, Channels: 2, Duration: 60, Bitrate: 800000}, nil
+}
+
+// newTestServerWithRealScanner wires a real library.Scanner (backed by a stub
+// prober) so POST /api/scan/dir actually indexes what is on disk. Returns the
+// server, the library root and the output directory.
+func newTestServerWithRealScanner(t *testing.T, eng TranscodeEngine, outDir string) (*Server, string) {
+	t.Helper()
+
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+
+	libDir := t.TempDir()
+	libID, err := database.UpsertLibrary("TestLib", libDir)
+	if err != nil {
+		t.Fatalf("UpsertLibrary: %v", err)
+	}
+	if outDir == "" {
+		outDir = t.TempDir()
+	}
+
+	scanner := library.NewScanner(database, stubProber{}, library.ScanConfig{
+		OutputDir: outDir,
+		CacheDir:  t.TempDir(),
+		Workers:   1,
+	})
+	srv := NewWithEngine(database, scanner, eng, Config{
+		Libraries: []LibraryConfig{{ID: libID, Name: "TestLib", Path: libDir}},
+		OutputDir: outDir,
+		StaticDir: realStaticDir(t),
+	})
+	t.Cleanup(srv.Shutdown)
+	return srv, libDir
+}
+
+// writeFiles creates dir and fills it with the given files.
+func writeFiles(t *testing.T, dir string, names ...string) {
+	t.Helper()
+	mkdirAll(t, dir)
+	for i, name := range names {
+		body := strings.Repeat("x", 64+i)
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatalf("WriteFile %q: %v", name, err)
+		}
+	}
+}
+
+// seedAudioDir creates an indexed audio directory both on disk and in the
+// index, for tests that drive a mock scanner and only need the lookups after
+// ScanDir to succeed.
+func seedAudioDir(t *testing.T, database *db.DB, libID int64, libDir, name string) {
+	t.Helper()
+	writeFiles(t, filepath.Join(libDir, name), "01 A.flac")
+	dirID, err := database.UpsertDirectory(libID, name, "FLAC", false, "")
+	if err != nil {
+		t.Fatalf("UpsertDirectory: %v", err)
+	}
+	if err := database.UpsertTrack(db.Track{
+		DirectoryID: dirID, Filename: "01 A.flac", Codec: "flac",
+		Bitrate: 900000, Duration: 60, SampleRate: 44100, Channels: 2, Size: 64,
+	}); err != nil {
+		t.Fatalf("UpsertTrack: %v", err)
+	}
+}
+
+func postScanDir(t *testing.T, srv *Server, path string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, apiURL("/api/scan/dir", map[string]string{"path": path}), nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	return w
+}
+
+func TestHandleScanState_Idle(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/scan/state", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("content type = %q, want application/json", ct)
+	}
+	// started_at must be present as null, not omitted: the schema is the same
+	// for every state.
+	if body := strings.TrimSpace(w.Body.String()); body != `{"running":false,"started_at":null}` {
+		t.Errorf("body = %s, want idle state with null started_at", body)
+	}
+}
+
+func TestHandleScanState_Running(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	block := make(chan struct{})
+	srv.scanner = &mockScanner{block: block}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/scan", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("scan: want 202, got %d", w.Code)
+	}
+	defer func() {
+		close(block)
+		time.Sleep(20 * time.Millisecond)
+	}()
+
+	w = httptest.NewRecorder()
+	srv.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/scan/state", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var got scanStateDTO
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !got.Running {
+		t.Errorf("running = false during a scan: %s", w.Body.String())
+	}
+	if got.StartedAt == nil || got.StartedAt.IsZero() {
+		t.Errorf("started_at = %v, want a timestamp", got.StartedAt)
+	}
+}
+
+// TestHandleScanDir_UnindexedDirectoryBecomesTranscodable is the two-call agent
+// flow: a directory ALTO has never seen answers not_indexed, one POST
+// /api/scan/dir indexes it, and POST /api/transcode then accepts it.
+func TestHandleScanDir_UnindexedDirectoryBecomesTranscodable(t *testing.T) {
+	srv, libDir := newTestServerWithRealScanner(t, &mockEngine{}, "")
+	albumDir := filepath.Join(libDir, "Artist", "Album")
+	writeFiles(t, albumDir, "01 A.flac", "02 B.flac")
+
+	raw, err := json.Marshal(map[string]any{"path": albumDir, "codec": "opus", "preset": "Music High"})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	body := func() *bytes.Reader { return bytes.NewReader(raw) }
+
+	req := httptest.NewRequest(http.MethodPost, "/api/transcode", body())
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	assertAPIError(t, w, http.StatusNotFound, codeNotIndexed)
+
+	w = postScanDir(t, srv, albumDir)
+	if w.Code != http.StatusOK {
+		t.Fatalf("scan/dir: want 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var res scanDirResultDTO
+	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if res.Directory.Path != "Artist/Album" {
+		t.Errorf("directory.path = %q, want Artist/Album", res.Directory.Path)
+	}
+	if res.Directory.CodecSummary != "FLAC" {
+		t.Errorf("directory.codec_summary = %q, want FLAC", res.Directory.CodecSummary)
+	}
+	if len(res.Tracks) != 2 {
+		t.Fatalf("tracks = %d, want 2: %s", len(res.Tracks), w.Body.String())
+	}
+	for _, tr := range res.Tracks {
+		if tr.Codec != "flac" {
+			t.Errorf("track %q codec = %q, want flac", tr.Filename, tr.Codec)
+		}
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/transcode", body())
+	w = httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("transcode after scan/dir: want 202, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestHandleScanDir_IndexesAncestors pins that the freshly indexed directory is
+// reachable from the tree, not orphaned.
+func TestHandleScanDir_IndexesAncestors(t *testing.T) {
+	srv, libDir := newTestServerWithRealScanner(t, nil, "")
+	writeFiles(t, filepath.Join(libDir, "Artist", "Album"), "01 A.flac")
+
+	if w := postScanDir(t, srv, filepath.Join(libDir, "Artist", "Album")); w.Code != http.StatusOK {
+		t.Fatalf("scan/dir: want 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	dirs, err := srv.db.GetDirectoryTree(srv.cfg.Libraries[0].ID)
+	if err != nil {
+		t.Fatalf("GetDirectoryTree: %v", err)
+	}
+	var paths []string
+	for _, d := range dirs {
+		paths = append(paths, d.Path)
+	}
+	for _, want := range []string{"Artist", "Artist/Album"} {
+		if !slices.Contains(paths, want) {
+			t.Errorf("directory %q missing from the tree, got %v", want, paths)
+		}
+	}
+}
+
+func TestHandleScanDir_NoAudioFiles(t *testing.T) {
+	srv, libDir := newTestServerWithRealScanner(t, nil, "")
+	writeFiles(t, filepath.Join(libDir, "docs"), "readme.txt")
+
+	w := postScanDir(t, srv, filepath.Join(libDir, "docs"))
+	assertAPIError(t, w, http.StatusUnprocessableEntity, codeNoTracks)
+}
+
+// TestHandleScanDir_OutputDirRefused covers the ErrDirExcluded → 403 mapping:
+// ALTO_OUTPUT_DIR inside a library root is skipped by a full scan too.
+func TestHandleScanDir_OutputDirRefused(t *testing.T) {
+	// The output directory has to live inside the library root for the
+	// exclusion to be reachable, so the root is built before the server.
+	libParent := t.TempDir()
+	outDir := filepath.Join(libParent, "out")
+	mkdirAll(t, outDir)
+
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	libID, err := database.UpsertLibrary("TestLib", libParent)
+	if err != nil {
+		t.Fatalf("UpsertLibrary: %v", err)
+	}
+	scanner := library.NewScanner(database, stubProber{}, library.ScanConfig{OutputDir: outDir, CacheDir: t.TempDir(), Workers: 1})
+	srv := New(database, scanner, Config{
+		Libraries: []LibraryConfig{{ID: libID, Name: "TestLib", Path: libParent}},
+		OutputDir: outDir,
+		StaticDir: realStaticDir(t),
+	})
+	writeFiles(t, filepath.Join(outDir, "album"), "01 A.flac")
+
+	w := postScanDir(t, srv, filepath.Join(outDir, "album"))
+	assertAPIError(t, w, http.StatusForbidden, codePathForbidden)
+}
+
+func TestHandleScanDir_PathValidation(t *testing.T) {
+	cases := []struct {
+		name       string
+		path       func(libDir string) string
+		wantStatus int
+		wantCode   string
+	}{
+		{"missing path", func(string) string { return "" }, http.StatusBadRequest, codeInvalidRequest},
+		{"outside root", func(string) string { return "/etc" }, http.StatusForbidden, codePathForbidden},
+		{"alto segment", func(libDir string) string { return filepath.Join(libDir, ".alto-out", "album") }, http.StatusForbidden, codePathForbidden},
+		// A path that is simply absent from disk is path_not_found, never
+		// not_indexed: rescanning would not help a typo.
+		{"missing on disk", func(libDir string) string { return filepath.Join(libDir, "nope") }, http.StatusNotFound, codePathNotFound},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, _, libDir := newTestServer(t)
+			w := postScanDir(t, srv, tc.path(libDir))
+			assertAPIError(t, w, tc.wantStatus, tc.wantCode)
+		})
+	}
+}
+
+// TestHandleScanDir_ConflictDuringFullScan asserts the mutual exclusion in the
+// direction a poller hits first.
+func TestHandleScanDir_ConflictDuringFullScan(t *testing.T) {
+	srv, database, libDir := newTestServer(t)
+	seedAudioDir(t, database, srv.cfg.Libraries[0].ID, libDir, "album1")
+
+	block := make(chan struct{})
+	srv.scanner = &mockScanner{block: block}
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/scan", nil))
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("scan: want 202, got %d", w.Code)
+	}
+	defer func() {
+		close(block)
+		time.Sleep(20 * time.Millisecond)
+	}()
+
+	w = postScanDir(t, srv, filepath.Join(libDir, "album1"))
+	assertAPIError(t, w, http.StatusConflict, codeScanRunning)
+}
+
+// TestHandleScan_RefusedDuringDirIndex asserts the other direction: the
+// reservation is held for ScanDir's whole duration, not just a check.
+func TestHandleScan_RefusedDuringDirIndex(t *testing.T) {
+	srv, database, libDir := newTestServer(t)
+	seedAudioDir(t, database, srv.cfg.Libraries[0].ID, libDir, "album1")
+
+	inScan := make(chan struct{})
+	release := make(chan struct{})
+	srv.scanner = &mockScanner{scanDir: func(context.Context, db.Library, string) error {
+		close(inScan)
+		<-release
+		return nil
+	}}
+
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() { done <- postScanDir(t, srv, filepath.Join(libDir, "album1")) }()
+	<-inScan
+
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/scan", nil))
+	assertAPIError(t, w, http.StatusConflict, codeScanRunning)
+
+	close(release)
+	dirResp := <-done
+	if dirResp.Code != http.StatusOK {
+		t.Fatalf("scan/dir: want 200, got %d: %s", dirResp.Code, dirResp.Body.String())
+	}
+
+	// The reservation is released, so a full scan is accepted again.
+	w = httptest.NewRecorder()
+	srv.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/scan", nil))
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("scan after dir index: want 202, got %d: %s", w.Code, w.Body.String())
+	}
+	time.Sleep(20 * time.Millisecond)
+}
+
+// TestHandleScanStatus_IdleDuringDirIndex is the regression the dedicated
+// dirScanning flag exists to prevent: a single-directory index broadcasts no
+// terminal event, so if it set scanState.running every connecting SSE client
+// would block until its request was cancelled.
+func TestHandleScanStatus_IdleDuringDirIndex(t *testing.T) {
+	srv, database, libDir := newTestServer(t)
+	seedAudioDir(t, database, srv.cfg.Libraries[0].ID, libDir, "album1")
+
+	inScan := make(chan struct{})
+	release := make(chan struct{})
+	srv.scanner = &mockScanner{scanDir: func(context.Context, db.Library, string) error {
+		close(inScan)
+		<-release
+		return nil
+	}}
+
+	dirDone := make(chan struct{})
+	go func() {
+		defer close(dirDone)
+		postScanDir(t, srv, filepath.Join(libDir, "album1"))
+	}()
+	<-inScan
+
+	// t.Context() is cancelled when the test ends, so a regressed handler that
+	// blocks here does not leak its goroutine past the failure.
+	statusDone := make(chan string, 1)
+	go func() {
+		req := httptest.NewRequest(http.MethodGet, "/api/scan/status", nil).WithContext(t.Context())
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, req)
+		statusDone <- w.Body.String()
+	}()
+
+	select {
+	case body := <-statusDone:
+		if !strings.Contains(body, "event: idle") {
+			t.Errorf("want idle SSE event during a single-directory index, got: %s", body)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("GET /api/scan/status blocked while a single-directory index was running")
+	}
+
+	close(release)
+	<-dirDone
+}
+
 // --- GET /api/cover ---
 
 func TestHandleCover_MissingPath(t *testing.T) {
@@ -1070,6 +1455,10 @@ func TestJSONAPIRoutes_ErrorEnvelope(t *testing.T) {
 		}, nil, http.StatusNotFound},
 		{"scan invalid library id", http.MethodPost, func(string) string { return "/api/scan?library_id=abc" }, nil, http.StatusBadRequest},
 		{"scan unknown library", http.MethodPost, func(string) string { return "/api/scan?library_id=9999" }, nil, http.StatusNotFound},
+		{"scan dir missing path", http.MethodPost, func(string) string { return "/api/scan/dir" }, nil, http.StatusBadRequest},
+		{"scan dir outside root", http.MethodPost, func(string) string {
+			return apiURL("/api/scan/dir", map[string]string{"path": "/etc"})
+		}, nil, http.StatusForbidden},
 		{"cover missing path", http.MethodGet, func(string) string { return "/api/cover" }, nil, http.StatusBadRequest},
 		{"cover outside root", http.MethodGet, func(string) string {
 			return apiURL("/api/cover", map[string]string{"path": "/etc"})

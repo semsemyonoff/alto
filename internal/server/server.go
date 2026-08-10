@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/semsemyonoff/ALTO/internal/db"
 	"github.com/semsemyonoff/ALTO/internal/transcode"
@@ -57,20 +58,63 @@ type ScanEvent struct {
 
 // scanState manages scan lifecycle and SSE subscriptions under a single mutex.
 type scanState struct {
-	mu      sync.Mutex
-	running bool
-	subs    []chan ScanEvent
+	mu        sync.Mutex
+	running   bool
+	startedAt time.Time
+	// dirScanning is held for the whole duration of a synchronous
+	// single-directory index. It is deliberately *not* part of running:
+	// subscribe() would then hand an SSE client a live subscription for a scan
+	// that never broadcasts a terminal event, hanging that client until its
+	// request is cancelled. The two flags exclude each other so a full scan and
+	// a single-directory index can never upsert and delete the same rows.
+	dirScanning bool
+	subs        []chan ScanEvent
 }
 
-// start attempts to mark a scan as running. Returns false if already running.
+// start attempts to mark a full scan as running. Returns false if a full scan
+// or a single-directory index is already in flight.
 func (ss *scanState) start() bool {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
-	if ss.running {
+	if ss.running || ss.dirScanning {
 		return false
 	}
 	ss.running = true
+	ss.startedAt = time.Now()
 	return true
+}
+
+// startDir reserves the index for a synchronous single-directory scan.
+// Returns false if a full scan or another single-directory index is in flight.
+// The caller must pair a true result with endDir.
+func (ss *scanState) startDir() bool {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	if ss.running || ss.dirScanning {
+		return false
+	}
+	ss.dirScanning = true
+	return true
+}
+
+// endDir releases the reservation taken by startDir.
+func (ss *scanState) endDir() {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	ss.dirScanning = false
+}
+
+// state reports whether a full library scan is running and when it started.
+// A single-directory index is not reported: it has no observable lifecycle
+// (its caller is blocked on the response) and this endpoint mirrors what
+// POST /api/scan and the SSE stream describe.
+func (ss *scanState) state() (bool, time.Time) {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	if !ss.running {
+		return false, time.Time{}
+	}
+	return true, ss.startedAt
 }
 
 // subscribe adds a new subscriber and returns (channel, isRunning).
@@ -104,6 +148,7 @@ func (ss *scanState) reset() {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
 	ss.running = false
+	ss.startedAt = time.Time{}
 }
 
 // broadcast sends an event to all subscribers.
@@ -134,6 +179,7 @@ func (ss *scanState) broadcast(e ScanEvent) {
 		}
 		ss.subs = nil
 		ss.running = false
+		ss.startedAt = time.Time{}
 	}
 }
 
@@ -294,6 +340,8 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /api/dir", s.handleDir)
 	s.mux.HandleFunc("POST /api/scan", s.handleScan)
 	s.mux.HandleFunc("GET /api/scan/status", s.handleScanStatus)
+	s.mux.HandleFunc("GET /api/scan/state", s.handleScanState)
+	s.mux.HandleFunc("POST /api/scan/dir", s.handleScanDir)
 	s.mux.HandleFunc("GET /api/cover", s.handleCover)
 	s.mux.HandleFunc("GET /api/jobs", s.handleJobs)
 	s.mux.HandleFunc("GET /api/jobs/events", s.handleJobEvents)

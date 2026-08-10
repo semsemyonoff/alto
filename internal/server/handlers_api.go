@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -10,8 +11,10 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/semsemyonoff/ALTO/internal/db"
+	"github.com/semsemyonoff/ALTO/internal/library"
 )
 
 // --- Response DTOs ---
@@ -42,6 +45,38 @@ type trackDTO struct {
 	SampleRate  int64   `json:"sample_rate"`
 	Channels    int64   `json:"channels"`
 	Size        int64   `json:"size"`
+}
+
+// scanStateDTO reports the full-scan lifecycle for polling clients.
+// StartedAt is null while idle.
+type scanStateDTO struct {
+	Running   bool       `json:"running"`
+	StartedAt *time.Time `json:"started_at"`
+}
+
+// scanDirResultDTO is the body of a successful single-directory index.
+type scanDirResultDTO struct {
+	Directory directoryDTO `json:"directory"`
+	Tracks    []trackDTO   `json:"tracks"`
+}
+
+func newDirectoryDTO(d *db.Directory) directoryDTO {
+	return directoryDTO{
+		ID: d.ID, LibraryID: d.LibraryID, Path: d.Path,
+		HasCover: d.HasCover, CodecSummary: d.CodecSummary,
+	}
+}
+
+func newTrackDTOs(tracks []db.Track) []trackDTO {
+	dtos := make([]trackDTO, len(tracks))
+	for i, t := range tracks {
+		dtos[i] = trackDTO{
+			ID: t.ID, DirectoryID: t.DirectoryID, Filename: t.Filename,
+			Codec: t.Codec, Bitrate: t.Bitrate, Duration: t.Duration,
+			SampleRate: t.SampleRate, Channels: t.Channels, Size: t.Size,
+		}
+	}
+	return dtos
 }
 
 // writeJSON serialises v as JSON with the given status code.
@@ -298,22 +333,9 @@ func (s *Server) handleDir(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dirDTO := directoryDTO{
-		ID: dir.ID, LibraryID: dir.LibraryID, Path: dir.Path,
-		HasCover: dir.HasCover, CodecSummary: dir.CodecSummary,
-	}
-	trackDTOs := make([]trackDTO, len(tracks))
-	for i, t := range tracks {
-		trackDTOs[i] = trackDTO{
-			ID: t.ID, DirectoryID: t.DirectoryID, Filename: t.Filename,
-			Codec: t.Codec, Bitrate: t.Bitrate, Duration: t.Duration,
-			SampleRate: t.SampleRate, Channels: t.Channels, Size: t.Size,
-		}
-	}
-
 	writeJSON(w, http.StatusOK, map[string]any{
-		"directory": dirDTO,
-		"tracks":    trackDTOs,
+		"directory": newDirectoryDTO(dir),
+		"tracks":    newTrackDTOs(tracks),
 	})
 }
 
@@ -395,6 +417,88 @@ func (s *Server) handleScanStatus(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+}
+
+// handleScanState reports the full-scan lifecycle as JSON, for clients that
+// poll instead of holding the SSE stream open.
+// GET /api/scan/state
+func (s *Server) handleScanState(w http.ResponseWriter, r *http.Request) {
+	running, startedAt := s.scan.state()
+	dto := scanStateDTO{Running: running}
+	if running && !startedAt.IsZero() {
+		t := startedAt.UTC()
+		dto.StartedAt = &t
+	}
+	writeJSON(w, http.StatusOK, dto)
+}
+
+// handleScanDir indexes exactly one directory, synchronously, and answers with
+// the resulting directory and tracks — the second half of the two-call agent
+// flow (index a fresh download, then transcode it).
+// POST /api/scan/dir?path=ABSOLUTE_PATH
+func (s *Server) handleScanDir(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Query().Get("path")
+	if path == "" {
+		writeAPIError(w, http.StatusBadRequest, codeInvalidRequest, `"path" is required`, nil)
+		return
+	}
+
+	resolved, err := LibraryOnlyValidate(path, s.libRoots())
+	if err != nil {
+		WritePathErrorJSON(w, err)
+		return
+	}
+
+	lib, rel, ok := s.findLibraryForPath(resolved)
+	if !ok {
+		writeAPIError(w, http.StatusNotFound, codeLibraryNotFound, "library not found for path", nil)
+		return
+	}
+
+	// Held for the whole indexing run, not just the check: a concurrent full
+	// scan would otherwise upsert and delete the same rows.
+	if !s.scan.startDir() {
+		writeAPIError(w, http.StatusConflict, codeScanRunning, "scan already running", nil)
+		return
+	}
+	defer s.scan.endDir()
+
+	scanErr := s.scanner.ScanDir(r.Context(), db.Library{ID: lib.ID, Name: lib.Name, Path: lib.Path}, rel)
+	if scanErr != nil {
+		switch {
+		case errors.Is(scanErr, library.ErrDirExcluded):
+			writeAPIError(w, http.StatusForbidden, codePathForbidden, "directory is excluded from scanning", nil)
+		case errors.Is(scanErr, os.ErrNotExist):
+			writeAPIError(w, http.StatusNotFound, codePathNotFound, "directory not found", nil)
+		default:
+			slog.Error("handleScanDir: ScanDir", "path", rel, "err", scanErr)
+			writeAPIError(w, http.StatusInternalServerError, codeInternalError, "internal error", nil)
+		}
+		return
+	}
+
+	dir, err := s.db.GetDirectoryByPath(lib.ID, rel)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, codeInternalError, "internal error", nil)
+		return
+	}
+	// A directory holding no audio files gets no index row, exactly as a full
+	// scan would leave it — there is nothing to report and nothing to transcode.
+	if dir == nil || !dir.IsAudio {
+		writeAPIError(w, http.StatusUnprocessableEntity, codeNoTracks, "no tracks found in directory", nil)
+		return
+	}
+
+	tracks, err := s.db.GetDirectoryFiles(dir.ID)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, codeInternalError, "internal error", nil)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, scanDirResultDTO{
+		Directory: newDirectoryDTO(dir),
+		Tracks:    newTrackDTOs(tracks),
+	})
 }
 
 // handleCover serves cover art for a library directory.
