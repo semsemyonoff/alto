@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -394,5 +395,99 @@ func TestBuildDockPresetsJSON_GroupsByCodecWithOneDefaultEach(t *testing.T) {
 	}
 	if musicHigh.Label != "Music High (160k)" {
 		t.Errorf("unexpected Opus Music High label: %q", musicHigh.Label)
+	}
+}
+
+// TestHandlePresets_ServesFullPresetShape verifies GET /api/presets answers JSON
+// carrying every built-in preset with its full parameter set, so an API client can
+// pick one without scraping the /dir page.
+func TestHandlePresets_ServesFullPresetShape(t *testing.T) {
+	srv, _, _ := newTestServerWithSidebarPartial(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/presets", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("want application/json, got %q", ct)
+	}
+
+	var got presetsDTO
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal body: %v\ngot: %s", err, w.Body.String())
+	}
+
+	if want := []string{"flac", "opus"}; !slices.Equal(got.Codecs, want) {
+		t.Errorf("codecs = %v, want %v", got.Codecs, want)
+	}
+	if len(got.Presets) != 6 {
+		t.Fatalf("want 6 presets, got %d: %+v", len(got.Presets), got.Presets)
+	}
+
+	byName := make(map[string]presetDTO, len(got.Presets))
+	defaults := make(map[string]int, 2)
+	for _, p := range got.Presets {
+		byName[p.Name] = p
+		if p.Default {
+			defaults[p.Codec]++
+		}
+	}
+	for _, codec := range got.Codecs {
+		if defaults[codec] != 1 {
+			t.Errorf("codec %q should have exactly one default preset, got %d", codec, defaults[codec])
+		}
+	}
+
+	wantBalanced := presetDTO{
+		Name: "Balanced", Label: "Balanced (compression 5)", Codec: "flac",
+		CompressionLevel: 5, CopyMetadata: true, CopyCover: true, Default: true,
+	}
+	if got := byName["Balanced"]; got != wantBalanced {
+		t.Errorf("FLAC Balanced = %+v, want %+v", got, wantBalanced)
+	}
+	wantMusicHigh := presetDTO{
+		Name: "Music High", Label: "Music High (160k)", Codec: "opus",
+		CompressionLevel: 10, Bitrate: "160k", CopyMetadata: true, CopyCover: false, Default: true,
+	}
+	if got := byName["Music High"]; got != wantMusicHigh {
+		t.Errorf("Opus Music High = %+v, want %+v", got, wantMusicHigh)
+	}
+}
+
+// TestPresets_PageAndAPIDescribeTheSameSet pins the invariant behind sourcing both
+// from buildPresets(): the /dir page's inlined tc-presets-data payload and the API
+// response must never drift apart in membership, codec grouping, label or default.
+func TestPresets_PageAndAPIDescribeTheSameSet(t *testing.T) {
+	var page map[string][]dockPresetDTO
+	if err := json.Unmarshal([]byte(buildDockPresetsJSON()), &page); err != nil {
+		t.Fatalf("unmarshal page presets: %v", err)
+	}
+
+	api := buildPresets()
+	if len(page) != len(api.Codecs) {
+		t.Errorf("page groups %d codecs, API reports %d: %v vs %v", len(page), len(api.Codecs), page, api.Codecs)
+	}
+
+	seen := 0
+	for _, p := range api.Presets {
+		seen++
+		idx := slices.IndexFunc(page[p.Codec], func(d dockPresetDTO) bool { return d.Name == p.Name })
+		if idx < 0 {
+			t.Errorf("preset %q (%s) missing from the page payload", p.Name, p.Codec)
+			continue
+		}
+		if d := page[p.Codec][idx]; d.Label != p.Label || d.Default != p.Default {
+			t.Errorf("preset %q: page has %+v, API has label=%q default=%v", p.Name, d, p.Label, p.Default)
+		}
+	}
+	total := 0
+	for _, presets := range page {
+		total += len(presets)
+	}
+	if total != seen {
+		t.Errorf("page carries %d presets, API carries %d", total, seen)
 	}
 }

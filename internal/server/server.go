@@ -297,6 +297,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("POST /api/jobs/{id}/cancel", s.handleJobCancel)
 	s.mux.HandleFunc("POST /api/jobs/{id}/remove", s.handleJobRemove)
 	s.mux.HandleFunc("GET /api/version", s.handleVersion)
+	s.mux.HandleFunc("GET /api/presets", s.handlePresets)
 	s.mux.HandleFunc("POST /api/transcode", s.handleTranscodeStart)
 	s.mux.HandleFunc("GET /api/transcode/{jobID}/log", s.handleTranscodeLog)
 	s.mux.HandleFunc("GET /{path...}", s.handleNotFoundPage)

@@ -18,7 +18,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/semsemyonoff/ALTO/internal/db"
-	"github.com/semsemyonoff/ALTO/internal/transcode"
 	"github.com/semsemyonoff/ALTO/internal/version"
 )
 
@@ -393,41 +392,18 @@ type dockPresetDTO struct {
 	Default bool   `json:"default,omitempty"`
 }
 
-// dockPresetLabel formats a display label for a preset's codec-specific parameter.
-func dockPresetLabel(p transcode.Preset) string {
-	switch p.Codec {
-	case transcode.CodecFLAC:
-		return fmt.Sprintf("%s (compression %d)", p.Name, p.CompressionLevel)
-	case transcode.CodecOpus:
-		return fmt.Sprintf("%s (%s)", p.Name, p.Bitrate)
-	default:
-		return p.Name
-	}
-}
-
-// dockDefaultPreset reports whether p is the dock's pre-selected preset for its codec.
-func dockDefaultPreset(p transcode.Preset) bool {
-	switch p.Codec {
-	case transcode.CodecFLAC:
-		return p.Name == transcode.FLACBalanced.Name
-	case transcode.CodecOpus:
-		return p.Name == transcode.OpusMusicHigh.Name
-	default:
-		return false
-	}
-}
-
-// buildDockPresetsJSON marshals transcode.DefaultPresets(), grouped by codec, for the
-// dock's Alpine component. The output is generated entirely from built-in preset
-// constants (no user input), so embedding it as template.JS is safe.
+// buildDockPresetsJSON groups buildPresets() by codec and narrows it to the three
+// fields the dock's Alpine component reads, so the page and GET /api/presets describe
+// the same set. The output is generated entirely from built-in preset constants (no
+// user input), so embedding it as template.JS is safe. The page keeps inlining it
+// rather than fetching /api/presets — the dock must not wait on a second request.
 func buildDockPresetsJSON() template.JS {
 	grouped := make(map[string][]dockPresetDTO)
-	for _, p := range transcode.DefaultPresets() {
-		codec := string(p.Codec)
-		grouped[codec] = append(grouped[codec], dockPresetDTO{
+	for _, p := range buildPresets().Presets {
+		grouped[p.Codec] = append(grouped[p.Codec], dockPresetDTO{
 			Name:    p.Name,
-			Label:   dockPresetLabel(p),
-			Default: dockDefaultPreset(p),
+			Label:   p.Label,
+			Default: p.Default,
 		})
 	}
 	b, err := json.Marshal(grouped)
