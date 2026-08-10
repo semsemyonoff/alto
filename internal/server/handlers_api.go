@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"os"
 	"strconv"
@@ -50,6 +51,56 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	if err := json.NewEncoder(w).Encode(v); err != nil {
 		slog.Error("json encode", "err", err)
 	}
+}
+
+// --- Machine-readable API errors ---
+
+// API error codes. These are the stable contract for JSON endpoints: the
+// human-readable message may change, the code may not.
+const (
+	codeInvalidRequest           = "invalid_request"
+	codePathForbidden            = "path_forbidden"
+	codePathNotFound             = "path_not_found"
+	codeLibraryNotFound          = "library_not_found"
+	codeNotIndexed               = "not_indexed"
+	codeNoTracks                 = "no_tracks"
+	codeMixedDirectory           = "mixed_directory"
+	codeNoLosslessTracks         = "no_lossless_tracks"
+	codeUnknownFile              = "unknown_file"
+	codeLossySourceSelected      = "lossy_source_selected"
+	codeOutputDirNotConfigured   = "output_dir_not_configured"
+	codeOutputNameConflict       = "output_name_conflict"
+	codeCopySkippedNotApplicable = "copy_skipped_not_applicable"
+	codeEngineUnavailable        = "engine_unavailable"
+	codeJobAlreadyRunning        = "job_already_running"
+	codeJobNotFound              = "job_not_found"
+	codeScanRunning              = "scan_running"
+	codeInternalError            = "internal_error"
+)
+
+// apiErrorDTO is the error envelope every JSON endpoint answers with.
+// Extra carries optional per-code context (offending file names, a job id, …)
+// and is flattened into the same object by MarshalJSON.
+type apiErrorDTO struct {
+	Error string         `json:"error"`
+	Code  string         `json:"code"`
+	Extra map[string]any `json:"-"`
+}
+
+// MarshalJSON flattens Extra alongside error/code. Keys named "error" or "code"
+// in Extra never win — the contract fields are written last.
+func (e apiErrorDTO) MarshalJSON() ([]byte, error) {
+	obj := make(map[string]any, len(e.Extra)+2)
+	maps.Copy(obj, e.Extra)
+	obj["error"] = e.Error
+	obj["code"] = e.Code
+	return json.Marshal(obj)
+}
+
+// writeAPIError writes a machine-readable error body for JSON endpoints.
+// HTML partials and page handlers keep using http.Error.
+func writeAPIError(w http.ResponseWriter, status int, code, msg string, extra map[string]any) {
+	writeJSON(w, status, apiErrorDTO{Error: msg, Code: code, Extra: extra})
 }
 
 // --- Handlers ---

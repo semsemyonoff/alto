@@ -166,3 +166,18 @@ func WritePathError(w http.ResponseWriter, err error) {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 	}
 }
+
+// WritePathErrorJSON is the JSON-API counterpart of WritePathError.
+// os.ErrNotExist means the path is missing on disk (path_not_found) — that is a
+// different failure from a path that exists but is absent from the index
+// (not_indexed), and clients act on the distinction.
+func WritePathErrorJSON(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, ErrOutsideRoot), errors.Is(err, ErrAltoSegment), errors.Is(err, ErrTraversal):
+		writeAPIError(w, http.StatusForbidden, codePathForbidden, "forbidden", nil)
+	case errors.Is(err, os.ErrNotExist):
+		writeAPIError(w, http.StatusNotFound, codePathNotFound, "path does not exist", nil)
+	default:
+		writeAPIError(w, http.StatusInternalServerError, codeInternalError, "internal server error", nil)
+	}
+}
