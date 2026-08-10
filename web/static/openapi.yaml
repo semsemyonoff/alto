@@ -1,0 +1,1532 @@
+openapi: 3.1.0
+
+# This document is the contract for ALTO's HTTP API. It is hand-written, and
+# three tests in internal/server hold it to the code (see openapi_test.go):
+# every /api/* route in Server.routes() must appear here and vice versa, the
+# Error.code enum must equal allAPIErrorCodes, and every component schema below
+# must match its DTO's json tags. Editing a handler without editing this file
+# fails `make test`.
+info:
+  title: ALTO API
+  # The ALTO release this document was last checked against (see VERSION).
+  version: 0.1.0
+  summary: Browse an indexed music library and transcode it with ffmpeg.
+  description: |
+    ALTO indexes one or more music libraries and transcodes lossless albums to
+    FLAC or Opus through a bounded worker pool.
+
+    ## Conventions
+
+    - Every JSON endpoint reports failures as the `Error` envelope
+      (`{"error", "code", …}`). `code` is the stable contract; `error` is
+      human-readable prose that may change between releases. Some codes add
+      context keys alongside the two required ones — they are named per
+      response below.
+    - `path` query parameters are **absolute** filesystem paths as the server
+      sees them, and must resolve inside a configured library root. Anything
+      outside one, or containing an `.alto` segment, is `403 path_forbidden`.
+    - `403 path_forbidden` / `404 path_not_found` describe the filesystem;
+      `404 not_indexed` means the directory exists but carries no index row.
+      The two are deliberately distinct: the remedy for the first is a
+      corrected path, for the second a scan.
+    - There is no authentication. ALTO is meant to run on a trusted network.
+    - `/api/tree/{libraryID}/children` and `/api/tree/{libraryID}/search` are
+      the exception to all of the above: they serve HTML partials for the htmx
+      UI and are not part of the JSON contract.
+
+    ## Lossless sources
+
+    Transcoding accepts lossless sources only. A codec counts as lossless when
+    it is one of `flac`, `alac`, `ape`, `wavpack`, `tta`, `truehd`, `mlp`, or
+    starts with `pcm_`. Everything else is lossy.
+  license:
+    name: MIT
+    identifier: MIT
+
+servers:
+  - url: /
+    description: The running ALTO instance; the API is relative to its own origin.
+
+tags:
+  - name: library
+    description: Libraries, directory trees and tracks from the index.
+  - name: scan
+    description: Indexing the libraries, in full or one directory at a time.
+  - name: transcode
+    description: Starting transcode jobs and inspecting the queue.
+  - name: meta
+    description: Version and machine-readable description of the service.
+
+paths:
+  /api/libraries:
+    get:
+      tags: [library]
+      operationId: listLibraries
+      summary: List every configured library
+      description: |
+        Returns all libraries with their indexed track counts. `indexed` is
+        simply `track_count > 0`.
+      responses:
+        '200':
+          description: The configured libraries.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [libraries]
+                properties:
+                  libraries:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Library'
+        '500':
+          description: '`internal_error` — the index could not be read.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/tree/{libraryID}:
+    get:
+      tags: [library]
+      operationId: getLibraryTree
+      summary: Every indexed directory of one library
+      description: |
+        Returns the library's full directory tree as a flat list. `path` is
+        relative to the library root (`""` for the root itself).
+      parameters:
+        - $ref: '#/components/parameters/LibraryID'
+      responses:
+        '200':
+          description: The library's directories.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [directories]
+                properties:
+                  directories:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Directory'
+        '400':
+          description: '`invalid_request` — `libraryID` is not a positive integer.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: '`internal_error` — the index could not be read.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/tree/{libraryID}/children:
+    get:
+      tags: [library]
+      operationId: getTreeChildrenPartial
+      summary: Direct children of a directory, as an HTML partial (UI-internal)
+      description: |
+        **Not part of the JSON contract.** This endpoint renders the sidebar
+        tree for the htmx frontend and answers with an HTML fragment, because
+        htmx swaps the response body straight into the DOM. Errors are plain
+        text through `http.Error`, not the `Error` envelope.
+
+        API clients should use `GET /api/tree/{libraryID}` instead.
+      parameters:
+        - $ref: '#/components/parameters/LibraryID'
+        - name: parent
+          in: query
+          required: false
+          description: |
+            Directory path relative to the library root whose children to
+            render. Omitted or empty means the library root.
+          schema:
+            type: string
+          example: Artist/Album
+      responses:
+        '200':
+          description: An HTML fragment holding one node per child directory.
+          content:
+            text/html:
+              schema:
+                type: string
+        '400':
+          description: Plain-text `invalid library_id`.
+          content:
+            text/plain:
+              schema:
+                type: string
+        '500':
+          description: Plain-text `internal error`.
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /api/tree/{libraryID}/search:
+    get:
+      tags: [library]
+      operationId: searchTreePartial
+      summary: Search a library's directories, as an HTML partial (UI-internal)
+      description: |
+        **Not part of the JSON contract.** Like
+        `/api/tree/{libraryID}/children`, this renders an htmx fragment and
+        uses plain-text errors rather than the `Error` envelope.
+
+        Matching is case-insensitive on the directory path and scoped to the
+        library. An empty `q` re-renders the library's root tree, so clearing
+        the search box restores the normal view.
+      parameters:
+        - $ref: '#/components/parameters/LibraryID'
+        - name: q
+          in: query
+          required: false
+          description: Search term; surrounding whitespace is trimmed.
+          schema:
+            type: string
+          example: nirvana
+      responses:
+        '200':
+          description: An HTML fragment holding the flat result list.
+          content:
+            text/html:
+              schema:
+                type: string
+        '400':
+          description: Plain-text `invalid library_id`.
+          content:
+            text/plain:
+              schema:
+                type: string
+        '500':
+          description: Plain-text `internal error`.
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /api/dir:
+    get:
+      tags: [library]
+      operationId: getDirectory
+      summary: One indexed directory and its tracks
+      description: |
+        Returns the index row for an absolute directory path plus every track
+        it holds. The directory must already be indexed — use
+        `POST /api/scan/dir` first for a fresh download.
+      parameters:
+        - $ref: '#/components/parameters/AbsolutePath'
+      responses:
+        '200':
+          description: The directory and its tracks.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [directory, tracks]
+                properties:
+                  directory:
+                    $ref: '#/components/schemas/Directory'
+                  tracks:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Track'
+        '400':
+          description: '`invalid_request` — `path` is missing.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: '`path_forbidden` — the path resolves outside every library root, or through an `.alto` segment.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: |
+            - `path_not_found` — nothing exists at that path.
+            - `library_not_found` — it exists but belongs to no configured library.
+            - `not_indexed` — it exists inside a library but has no index row holding audio.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: '`internal_error` — the index could not be read.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/cover:
+    get:
+      tags: [library]
+      operationId: getCover
+      summary: Cover art for an indexed directory
+      description: |
+        Serves the cover image resolved for the directory at `path`. The image
+        file itself is chosen at scan time and cannot be requested directly.
+        Conditional requests and byte ranges are supported, so a client may
+        also see `304` or `206`.
+      parameters:
+        - $ref: '#/components/parameters/AbsolutePath'
+      responses:
+        '200':
+          description: The cover image.
+          content:
+            image/jpeg:
+              schema:
+                type: string
+                format: binary
+            image/png:
+              schema:
+                type: string
+                format: binary
+        '400':
+          description: '`invalid_request` — `path` is missing.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: '`path_forbidden` — the path resolves outside every library root.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: |
+            - `library_not_found` — the path belongs to no configured library.
+            - `no_cover` — the directory is indexed but has no cover art.
+            - `path_not_found` — the recorded cover file is gone, or was replaced by a symlink.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: '`internal_error` — the index or the cover file could not be read.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/scan:
+    post:
+      tags: [scan]
+      operationId: startScan
+      summary: Start a full re-index
+      description: |
+        Starts an asynchronous re-index of every configured library, or of one
+        library when `library_id` is given, and returns immediately. Progress
+        is reported on `GET /api/scan/status` (SSE) or by polling
+        `GET /api/scan/state`.
+
+        Only one full scan runs at a time, and a full scan and a
+        single-directory index (`POST /api/scan/dir`) exclude each other.
+      parameters:
+        - name: library_id
+          in: query
+          required: false
+          description: Restrict the scan to one library. Omit to scan all of them.
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+      responses:
+        '202':
+          description: The scan has been started.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    const: started
+        '400':
+          description: '`invalid_request` — `library_id` is not a positive integer.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: '`library_not_found` — no configured library has that id.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: '`scan_running` — a full scan or a single-directory index is already in flight.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/scan/status:
+    get:
+      tags: [scan]
+      operationId: streamScanStatus
+      summary: Scan progress as a server-sent event stream
+      description: |
+        Streams the lifecycle of the running full scan. If no scan is running
+        the server sends a single `idle` event with the payload `{}` and closes
+        the stream immediately, rather than holding the connection open.
+
+        Otherwise the event name is the `type` field of the `ScanEvent` payload:
+
+        | event      | when                        | payload                              |
+        |------------|-----------------------------|--------------------------------------|
+        | `started`  | the walk begins             | `{"type":"started"}`                 |
+        | `progress` | directories discovered      | `ScanEvent` with `discovered`        |
+        | `complete` | the scan finished           | `ScanEvent` with `added`/`removed`   |
+        | `error`    | the scan failed             | `ScanEvent` with `message`           |
+
+        `complete` and `error` are terminal: the server closes the stream after
+        either. `progress` events are best-effort and may be dropped for a slow
+        consumer; terminal events never are. A single-directory index
+        (`POST /api/scan/dir`) has no observable lifecycle and is not reported
+        here — during one this endpoint still answers `idle`.
+      responses:
+        '200':
+          description: The event stream.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                contentMediaType: text/event-stream
+                description: |
+                  A `text/event-stream` body. Each frame is
+                  `event: <name>\ndata: <json>\n\n`, where `<json>` is a
+                  `ScanEvent` (or `{}` for `idle`).
+              examples:
+                idle:
+                  summary: No scan running
+                  value: |
+                    event: idle
+                    data: {}
+                progress:
+                  summary: A scan in flight, then finishing
+                  value: |
+                    event: progress
+                    data: {"type":"progress","discovered":128}
+
+                    event: complete
+                    data: {"type":"complete","message":"Re-index complete. Added: 3, removed: 1.","added":3,"removed":1}
+        '500':
+          description: '`internal_error` — the connection does not support streaming.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/scan/state:
+    get:
+      tags: [scan]
+      operationId: getScanState
+      summary: Whether a full scan is running
+      description: |
+        The polling alternative to `GET /api/scan/status` for clients that do
+        not want to hold an event stream open. It reports the **full** scan
+        only; a single-directory index is invisible here, exactly as it is on
+        the stream.
+      responses:
+        '200':
+          description: The current full-scan state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScanState'
+
+  /api/scan/dir:
+    post:
+      tags: [scan]
+      operationId: scanDirectory
+      summary: Index exactly one directory, synchronously
+      description: |
+        Indexes a single directory and answers with the resulting index row and
+        tracks — the same shape `GET /api/dir` returns. The call blocks until
+        the directory has been probed.
+
+        This is the first half of the two-call agent flow: `POST /api/scan/dir`
+        to index a fresh download, then `POST /api/transcode` on the same path.
+        No event stream to parse, and no full library walk.
+
+        It leaves the rest of the library's index untouched (no stale-directory
+        cleanup) and serializes against a full scan in both directions.
+      parameters:
+        - $ref: '#/components/parameters/AbsolutePath'
+      responses:
+        '200':
+          description: The directory as it is now indexed, with its tracks.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScanDirResult'
+        '400':
+          description: '`invalid_request` — `path` is missing.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: |
+            `path_forbidden` — the path resolves outside every library root, or
+            is excluded from scanning (the configured output directory, or an
+            `.alto` segment).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: |
+            - `path_not_found` — the directory does not exist, or the path names a file rather than a directory.
+            - `library_not_found` — the path belongs to no configured library.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: '`scan_running` — a full scan or another single-directory index is in flight.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          description: |
+            `no_tracks` — the directory was indexed successfully but holds no
+            audio files, so there is nothing to report and nothing to transcode.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: '`internal_error` — indexing or the follow-up index read failed.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/presets:
+    get:
+      tags: [transcode]
+      operationId: listPresets
+      summary: The built-in transcode presets
+      description: |
+        Lists every built-in preset in display order, plus the codecs they
+        target in first-appearance order. Pass a preset's `name` as
+        `POST /api/transcode`'s `preset` field.
+
+        Exactly one preset per codec has `default: true` — the one the UI
+        pre-selects.
+      responses:
+        '200':
+          description: The built-in presets.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [codecs, presets]
+                properties:
+                  codecs:
+                    type: array
+                    description: The codecs the presets target, in first-appearance order.
+                    items:
+                      type: string
+                      enum: [flac, opus]
+                  presets:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Preset'
+
+  /api/jobs:
+    get:
+      tags: [transcode]
+      operationId: listJobs
+      summary: The transcode queue
+      description: |
+        Every tracked job in registration order — queued, running, and terminal
+        ones until they are evicted from the list. Evicted jobs disappear from
+        here while `GET /api/jobs/{id}` keeps answering with their outcome.
+
+        The entries are the same compact `JobEvent` payload the SSE stream
+        broadcasts; for the selection, output directory and failure reason use
+        `GET /api/jobs/{id}`.
+      responses:
+        '200':
+          description: The queue, in registration order.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [jobs]
+                properties:
+                  jobs:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/JobEvent'
+
+  /api/jobs/events:
+    get:
+      tags: [transcode]
+      operationId: streamJobEvents
+      summary: Queue changes as a server-sent event stream
+      description: |
+        The global queue feed. On connect the server replays the current queue
+        as a burst of `update` events, then streams live deltas: one `update`
+        per lifecycle transition and per ffmpeg progress line, and a `remove`
+        event when a job leaves the list. The snapshot and the subscription are
+        registered atomically, so no update can be missed or duplicated between
+        the two.
+
+        Both event types carry a `JobEvent` payload. On `remove` only `id` and
+        `removed` are set.
+
+        A slow consumer whose buffer fills is dropped and its stream closed;
+        reconnecting re-delivers the snapshot.
+      responses:
+        '200':
+          description: The event stream.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                contentMediaType: text/event-stream
+                description: |
+                  A `text/event-stream` body. Each frame is
+                  `event: update|remove\ndata: <JobEvent JSON>\n\n`.
+              examples:
+                stream:
+                  summary: A snapshot entry, a progress update, and a removal
+                  value: |
+                    event: update
+                    data: {"id":"9f1c2d3e4a5b6c7d","status":"running","pct":41.5,"title":"Music/Artist/Album","sub":"flac → opus/Music High","dir":"/music/Artist/Album"}
+
+                    event: remove
+                    data: {"id":"9f1c2d3e4a5b6c7d","status":"","pct":0,"title":"","sub":"","removed":true}
+        '500':
+          description: '`internal_error` — the connection does not support streaming.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/jobs/{id}:
+    get:
+      tags: [transcode]
+      operationId: getJob
+      summary: Full detail for one job
+      description: |
+        Everything the queue feed deliberately leaves out: the resolved
+        selection, the skipped tracks, the output directory, the failure
+        reason and the lifecycle timestamps. Poll this until `status` is
+        terminal (`done`, `failed` or `canceled`).
+
+        Terminal jobs are tombstoned rather than deleted — a job that has left
+        the queue list still answers here with `evicted: true`. A
+        `404 job_not_found` therefore means the id never existed, or its
+        tombstone was finally dropped past the retention bound.
+      parameters:
+        - $ref: '#/components/parameters/JobID'
+      responses:
+        '200':
+          description: The job.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobDetail'
+        '400':
+          description: '`invalid_request` — the job id is empty.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: '`job_not_found` — no such job is tracked.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/jobs/{id}/cancel:
+    post:
+      tags: [transcode]
+      operationId: cancelJob
+      summary: Cancel a queued or running job
+      description: |
+        A queued job is canceled immediately; a running one has its ffmpeg
+        context canceled and reaches `canceled` shortly after. The
+        acknowledgement means the cancellation was accepted, not that the
+        engine has already exited — watch `GET /api/jobs/{id}` for the
+        terminal status.
+      parameters:
+        - $ref: '#/components/parameters/JobID'
+      responses:
+        '202':
+          description: The cancellation was accepted.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    const: canceled
+        '400':
+          description: '`invalid_request` — the job id is empty.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: '`job_not_found` — no such job is tracked.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: '`job_already_finished` — the job is already `done`, `failed` or `canceled`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/jobs/{id}/remove:
+    post:
+      tags: [transcode]
+      operationId: removeJob
+      summary: Drop a terminal job from the queue list
+      description: |
+        Removes a `done`, `failed` or `canceled` job from the queue list right
+        away instead of waiting for its timed eviction, and broadcasts a
+        `remove` event to connected queue panels. Like the timed eviction it
+        leaves a tombstone, so `GET /api/jobs/{id}` keeps answering.
+
+        Queued and running jobs must be canceled first.
+      parameters:
+        - $ref: '#/components/parameters/JobID'
+      responses:
+        '202':
+          description: The job was dropped from the queue list.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    const: removed
+        '400':
+          description: '`invalid_request` — the job id is empty.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: '`job_not_found` — no such job is tracked.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: '`job_already_running` — the job is still queued or running; cancel it first.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/transcode:
+    post:
+      tags: [transcode]
+      operationId: startTranscode
+      summary: Queue a transcode job for one directory
+      description: |
+        Queues a job for the indexed directory at `path` and answers with the
+        job id and the resolved selection. The job itself runs asynchronously
+        on a bounded worker pool — a `202` means queued, not finished.
+
+        One job per source directory: a second request for a directory that is
+        already queued or running is `409 job_already_running`, with the
+        existing `job_id` in the error context.
+
+        ## Choosing the codec and parameters
+
+        Either name a built-in preset (`preset`, see `GET /api/presets`), or
+        set `preset` to `"custom"` (or omit it) and give `codec` plus the
+        optional override fields. A `preset` that names neither a built-in nor
+        `"custom"` is `400 invalid_request`. Override fields are ignored when
+        `preset` names a built-in.
+
+        ## Selecting tracks
+
+        `skip_lossy` and `files` are the two selection inputs, and they are
+        mutually exclusive — sending both is `400 invalid_request`. So is
+        `"files": []`; omit the field to mean "the whole directory".
+
+        | request              | transcoded                     | refused when                                        |
+        |----------------------|--------------------------------|-----------------------------------------------------|
+        | neither field        | every track in the directory   | any track is lossy → `422 mixed_directory`          |
+        | `"skip_lossy": true` | the lossless tracks only       | there are none → `422 no_lossless_tracks`           |
+        | `"files": [names]`   | exactly those tracks           | a name is unknown → `422 unknown_file`; a name is a lossy source → `422 lossy_source_selected` |
+
+        `files` narrows a job, never widens it: names must be bare file names
+        (no `/` or `\`, not `""`, `"."` or `".."`), unique, present in the
+        directory's index, and lossless. Order does not matter — the job runs
+        in directory order either way.
+
+        ## What happens to the tracks left behind
+
+        By default nothing: they are neither transcoded nor copied. Set
+        `copy_skipped: true` to copy them verbatim into the output directory
+        alongside the transcoded ones — useful when the point is a complete
+        album rather than a converted one. A failed pass-through copy fails the
+        whole job, because those files were explicitly requested.
+
+        `copy_skipped` is refused with `400 copy_skipped_not_applicable` for
+        `output_mode: "replace"`, where the destination *is* the source
+        directory and the skipped files are already in place.
+
+        The `202` body reports both halves: `files` names what was scheduled
+        and `skipped` names what was left, each with the reason (`lossy` when
+        dropped by `skip_lossy`, `not_selected` when absent from `files`).
+        With no selection at all, `skipped` is empty.
+
+        ## Output name conflicts
+
+        Transcoding rewrites the extension, so distinct sources can collapse
+        onto one output name (`01 A.ape` and `01 A.flac` both become
+        `01 A.flac`), and a pass-through copy keeps its own name. That is
+        checked before anything is written: `422 output_name_conflict`, with
+        the colliding outputs and their sources in the error context.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TranscodeRequest'
+            examples:
+              preset:
+                summary: Whole album, built-in preset, shared output
+                value:
+                  path: /music/Artist/Album
+                  preset: Music High
+                  output_mode: shared
+              mixed:
+                summary: Mixed album — transcode the lossless, copy the rest
+                value:
+                  path: /music/Artist/Album
+                  preset: Balanced
+                  output_mode: local
+                  skip_lossy: true
+                  copy_skipped: true
+              explicit:
+                summary: Two named tracks, custom Opus parameters
+                value:
+                  path: /music/Artist/Album
+                  codec: opus
+                  bitrate: 192k
+                  output_mode: shared
+                  files:
+                    - 01 Opening.flac
+                    - 02 Closing.flac
+      responses:
+        '202':
+          description: The job was queued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TranscodeAccepted'
+        '400':
+          description: |
+            - `invalid_request` — malformed body; missing `path`; `skip_lossy`
+              and `files` both set; `"files": []`; a selection name that is not
+              a bare file name (context: `invalid`) or is repeated (context:
+              `duplicate`); unknown `preset`, `codec`, `bitrate` or
+              `output_mode`.
+            - `copy_skipped_not_applicable` — `copy_skipped` with
+              `output_mode: "replace"`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: |
+            `path_forbidden` — the source path, or the resolved output
+            directory, lies outside the permitted roots.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: |
+            - `path_not_found` — nothing exists at `path`.
+            - `library_not_found` — `path` belongs to no configured library.
+            - `not_indexed` — it exists inside a library but has no index row; scan it first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: |
+            `job_already_running` — that directory already has a queued or
+            running job. Context: `job_id`, the existing job.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          description: |
+            - `no_tracks` — the directory holds no indexed tracks.
+            - `mixed_directory` — no selection was given and the directory mixes lossless and lossy tracks.
+            - `no_lossless_tracks` — `skip_lossy` was set and nothing lossless remained.
+            - `unknown_file` — a name in `files` is not in the directory index. Context: `unknown`.
+            - `lossy_source_selected` — a name in `files` is a lossy source. Context: `lossy`.
+            - `output_dir_not_configured` — `output_mode: "shared"` with no output directory configured on the server.
+            - `output_name_conflict` — several files would produce the same output name. Context: `conflicts`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                conflict:
+                  summary: Two sources collapsing onto one output name
+                  value:
+                    error: several selected files would produce the same output file name
+                    code: output_name_conflict
+                    conflicts:
+                      - output: 01 A.flac
+                        sources:
+                          - 01 A.ape
+                          - 01 A.flac
+        '500':
+          description: '`internal_error` — the index could not be read.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: '`engine_unavailable` — this instance runs without a transcode engine.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/transcode/{jobID}/log:
+    get:
+      tags: [transcode]
+      operationId: getJobLog
+      summary: The tail of a job's log
+      description: |
+        Returns the job's in-memory log lines, oldest first. The buffer is a
+        ring of the last 1000 lines and does not survive a restart. Despite the
+        name this endpoint answers with JSON, not plain text.
+      parameters:
+        - name: jobID
+          in: path
+          required: true
+          description: The job id returned by `POST /api/transcode`.
+          schema:
+            type: string
+          example: 9f1c2d3e4a5b6c7d
+        - name: n
+          in: query
+          required: false
+          description: Return only the last `n` lines. Omit for everything buffered.
+          schema:
+            type: integer
+            minimum: 1
+          example: 50
+      responses:
+        '200':
+          description: The buffered log lines.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobLog'
+        '400':
+          description: '`invalid_request` — the job id is empty, or `n` is not a positive integer.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: |
+            `job_not_found` — no such job is tracked. Note this endpoint reads
+            the live job table rather than the tombstones, so a job dropped
+            from the queue list has no log here even while
+            `GET /api/jobs/{id}` still answers.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/version:
+    get:
+      tags: [meta]
+      operationId: getVersion
+      summary: The running ALTO version
+      responses:
+        '200':
+          description: Version information.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Version'
+
+  /api/openapi.yaml:
+    get:
+      tags: [meta]
+      operationId: getOpenAPIDocument
+      summary: This document
+      description: |
+        Serves this OpenAPI description. It is a static asset, also reachable
+        at `/static/openapi.yaml` through the ordinary static file server —
+        that is the same file, not a second contract.
+      responses:
+        '200':
+          description: The OpenAPI 3.1 document.
+          content:
+            application/yaml:
+              schema:
+                type: string
+        '404':
+          description: |
+            Plain text. The document is missing from the static directory —
+            a packaging fault, not a client error.
+          content:
+            text/plain:
+              schema:
+                type: string
+
+components:
+  parameters:
+    LibraryID:
+      name: libraryID
+      in: path
+      required: true
+      description: The library's id, as reported by `GET /api/libraries`.
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
+      example: 1
+
+    JobID:
+      name: id
+      in: path
+      required: true
+      description: The job id returned by `POST /api/transcode`.
+      schema:
+        type: string
+      example: 9f1c2d3e4a5b6c7d
+
+    AbsolutePath:
+      name: path
+      in: query
+      required: true
+      description: |
+        Absolute path to a directory, as the server sees it. It must resolve
+        inside a configured library root.
+      schema:
+        type: string
+      example: /music/Artist/Album
+
+  schemas:
+    Library:
+      type: object
+      description: One configured library and its indexing state.
+      required: [id, name, path, indexed, track_count]
+      properties:
+        id:
+          type: integer
+          format: int64
+        name:
+          type: string
+          description: Library name from the configuration; matches `[a-zA-Z0-9_-]+`.
+          example: Music
+        path:
+          type: string
+          description: Absolute path to the library root.
+          example: /music
+        indexed:
+          type: boolean
+          description: Whether the library holds any indexed tracks (`track_count > 0`).
+        track_count:
+          type: integer
+          description: Number of indexed tracks in the library.
+
+    Directory:
+      type: object
+      description: One indexed directory.
+      required: [id, library_id, path, has_cover, codec_summary]
+      properties:
+        id:
+          type: integer
+          format: int64
+        library_id:
+          type: integer
+          format: int64
+        path:
+          type: string
+          description: Path relative to the library root; empty for the root itself.
+          example: Artist/Album
+        has_cover:
+          type: boolean
+          description: Whether cover art was found; if true, `GET /api/cover` serves it.
+        codec_summary:
+          type: string
+          description: The codecs present in the directory, summarised for display.
+          example: flac
+
+    Track:
+      type: object
+      description: One indexed audio file.
+      required:
+        - id
+        - directory_id
+        - filename
+        - codec
+        - bitrate
+        - duration
+        - sample_rate
+        - channels
+        - size
+      properties:
+        id:
+          type: integer
+          format: int64
+        directory_id:
+          type: integer
+          format: int64
+        filename:
+          type: string
+          description: Bare file name — this is what `files` in a transcode request accepts.
+          example: 01 Opening.flac
+        codec:
+          type: string
+          description: |
+            ffprobe's codec name. Lossless sources are `flac`, `alac`, `ape`,
+            `wavpack`, `tta`, `truehd`, `mlp` and anything prefixed `pcm_`.
+          example: flac
+        bitrate:
+          type: integer
+          format: int64
+          description: Bits per second.
+        duration:
+          type: number
+          format: double
+          description: Seconds.
+        sample_rate:
+          type: integer
+          format: int64
+          description: Hertz.
+        channels:
+          type: integer
+          format: int64
+        size:
+          type: integer
+          format: int64
+          description: Bytes.
+
+    ScanState:
+      type: object
+      description: The full-scan lifecycle, for clients that poll.
+      required: [running, started_at]
+      properties:
+        running:
+          type: boolean
+        started_at:
+          type: [string, 'null']
+          format: date-time
+          description: When the running scan started; `null` while idle.
+
+    ScanDirResult:
+      type: object
+      description: The result of indexing exactly one directory.
+      required: [directory, tracks]
+      properties:
+        directory:
+          $ref: '#/components/schemas/Directory'
+        tracks:
+          type: array
+          items:
+            $ref: '#/components/schemas/Track'
+
+    ScanEvent:
+      type: object
+      description: |
+        The payload of a `GET /api/scan/status` frame. Which fields are present
+        depends on `type`; the `idle` frame carries `{}` instead of this shape.
+      required: [type]
+      properties:
+        type:
+          type: string
+          enum: [started, progress, complete, error, idle]
+        message:
+          type: string
+          description: Human-readable summary; the failure reason when `type` is `error`.
+        added:
+          type: integer
+          description: Directories added by the scan; `type` `complete` only.
+        removed:
+          type: integer
+          description: Directories dropped by the scan; `type` `complete` only.
+        discovered:
+          type: integer
+          description: Running total of directories discovered so far; `type` `progress` only.
+
+    Preset:
+      type: object
+      description: One built-in transcode preset.
+      required:
+        - name
+        - label
+        - codec
+        - compression_level
+        - bitrate
+        - copy_metadata
+        - copy_cover
+        - default
+      properties:
+        name:
+          type: string
+          description: Pass this as `preset` in a transcode request.
+          example: Music High
+        label:
+          type: string
+          description: Display label including the codec-specific parameter.
+          example: Music High (160k)
+        codec:
+          type: string
+          enum: [flac, opus]
+        compression_level:
+          type: integer
+          description: FLAC 0–8; Opus is always 10.
+        bitrate:
+          type: string
+          description: Opus only; empty for FLAC.
+          example: 160k
+        copy_metadata:
+          type: boolean
+        copy_cover:
+          type: boolean
+          description: Always false for Opus — Ogg cannot carry an embedded cover.
+        default:
+          type: boolean
+          description: Whether this is the pre-selected preset for its codec.
+
+    TranscodeRequest:
+      type: object
+      description: |
+        The body of `POST /api/transcode`. See that operation's description for
+        the selection rules and the output-mode semantics.
+      required: [path]
+      properties:
+        path:
+          type: string
+          description: Absolute path to the indexed source directory.
+          example: /music/Artist/Album
+        codec:
+          type: string
+          enum: [flac, opus]
+          description: Target codec. Required unless `preset` names a built-in preset.
+        preset:
+          type: string
+          description: |
+            A built-in preset name from `GET /api/presets`, or `"custom"` (or
+            omitted) to build one from `codec` and the override fields below.
+          example: Music High
+        output_mode:
+          type: string
+          enum: [shared, local, replace]
+          default: shared
+          description: |
+            - `shared` — mirror the library structure under the server's configured output directory.
+            - `local` — write into an `alto-out/` subdirectory of the source directory.
+            - `replace` — rewrite the sources in place, with backup and rollback.
+        compression_level:
+          type: integer
+          description: |
+            Custom override, ignored when `preset` names a built-in. FLAC 0–8;
+            defaults to 10 for Opus.
+        bitrate:
+          type: string
+          pattern: '^[0-9]+k?$'
+          description: |
+            Custom override, ignored when `preset` names a built-in. Opus only;
+            defaults to `160k`.
+          example: 192k
+        copy_metadata:
+          type: boolean
+          description: Custom override; defaults to true.
+        copy_cover:
+          type: boolean
+          description: Custom override; defaults to true for FLAC and false for Opus.
+        skip_lossy:
+          type: boolean
+          description: |
+            Transcode the lossless tracks and skip the lossy ones. Mutually
+            exclusive with `files`.
+        files:
+          type: array
+          minItems: 1
+          items:
+            type: string
+          description: |
+            Bare file names to transcode, all lossless and all present in the
+            directory index. Mutually exclusive with `skip_lossy`. Omit for the
+            whole directory; `[]` is rejected.
+          example:
+            - 01 Opening.flac
+            - 02 Closing.flac
+        copy_skipped:
+          type: boolean
+          description: |
+            Copy the unselected audio files verbatim into the output alongside
+            the transcoded ones. Not applicable to `output_mode: "replace"`.
+
+    TranscodeAccepted:
+      type: object
+      description: |
+        The `202` body of `POST /api/transcode`. Both lists are always present,
+        never `null`, so a client never has to tell `[]` from absent.
+      required: [job_id, files, skipped]
+      properties:
+        job_id:
+          type: string
+          description: Use it with `GET /api/jobs/{id}` and the cancel/remove endpoints.
+          example: 9f1c2d3e4a5b6c7d
+        files:
+          type: array
+          description: The tracks the job will transcode, in directory order.
+          items:
+            type: string
+        skipped:
+          type: array
+          description: The tracks the selection left behind; empty when no selection was given.
+          items:
+            $ref: '#/components/schemas/SkippedTrack'
+
+    SkippedTrack:
+      type: object
+      description: One track excluded from a transcode job.
+      required: [name, codec, reason]
+      properties:
+        name:
+          type: string
+          example: 03 Bonus.mp3
+        codec:
+          type: string
+          example: mp3
+        reason:
+          type: string
+          enum: [lossy, not_selected]
+          description: |
+            - `lossy` — dropped by `skip_lossy`.
+            - `not_selected` — absent from an explicit `files` list.
+
+    JobEvent:
+      type: object
+      description: |
+        The compact queue payload, broadcast on `GET /api/jobs/events` and
+        listed by `GET /api/jobs`. It is deliberately small: it goes out once
+        per ffmpeg progress line to every connected client.
+      required: [id, status, pct, title, sub]
+      properties:
+        id:
+          type: string
+          example: 9f1c2d3e4a5b6c7d
+        status:
+          $ref: '#/components/schemas/JobStatus'
+        pct:
+          type: number
+          format: double
+          description: Overall progress, 0–100. A `done` job always reports 100.
+        title:
+          type: string
+          description: Library and directory, for display.
+          example: Music/Artist/Album
+        sub:
+          type: string
+          description: Source codec and target preset, for display.
+          example: flac → opus/Music High
+        dir:
+          type: string
+          description: |
+            Absolute source directory, resolved the same way a transcode
+            request's `path` is. Absent on `remove` events.
+          example: /music/Artist/Album
+        removed:
+          type: boolean
+          description: |
+            Set only on a `remove` event, where it is the sole meaningful field
+            besides `id`.
+
+    JobDetail:
+      type: object
+      description: |
+        The body of `GET /api/jobs/{id}` — everything `JobEvent` leaves out,
+        at the cost of one request per job.
+      required:
+        - id
+        - status
+        - pct
+        - title
+        - sub
+        - dir
+        - error
+        - output_dir
+        - files
+        - skipped
+        - total_files
+        - done_files
+        - created_at
+        - started_at
+        - finished_at
+        - evicted
+      properties:
+        id:
+          type: string
+        status:
+          $ref: '#/components/schemas/JobStatus'
+        pct:
+          type: number
+          format: double
+        title:
+          type: string
+        sub:
+          type: string
+        dir:
+          type: string
+          description: Absolute source directory.
+        error:
+          type: string
+          description: The engine's failure reason; empty unless `status` is `failed`.
+        output_dir:
+          type: string
+          description: |
+            Where the job writes. The source directory itself for
+            `output_mode: "replace"`.
+        files:
+          type: array
+          description: The tracks being transcoded, in directory order.
+          items:
+            type: string
+        skipped:
+          type: array
+          description: The tracks the selection left behind.
+          items:
+            $ref: '#/components/schemas/SkippedTrack'
+        total_files:
+          type: integer
+        done_files:
+          type: integer
+          description: How many of `files` are fully transcoded.
+        created_at:
+          type: string
+          format: date-time
+          description: When the job was queued.
+        started_at:
+          type: [string, 'null']
+          format: date-time
+          description: When a worker picked it up; `null` while queued.
+        finished_at:
+          type: [string, 'null']
+          format: date-time
+          description: When it reached a terminal status; `null` before that.
+        evicted:
+          type: boolean
+          description: |
+            Whether the job has left the queue list. An evicted job is a
+            tombstone: still readable here, gone from `GET /api/jobs` and the
+            event stream.
+
+    JobLog:
+      type: object
+      description: The body of `GET /api/transcode/{jobID}/log`.
+      required: [job_id, status, lines]
+      properties:
+        job_id:
+          type: string
+        status:
+          $ref: '#/components/schemas/JobStatus'
+        lines:
+          type: [array, 'null']
+          description: Buffered log lines, oldest first. `null` when nothing was logged.
+          items:
+            type: string
+        error:
+          type: string
+          description: The failure reason; present only when the job failed.
+
+    JobStatus:
+      type: string
+      description: |
+        A job's lifecycle state. `done`, `failed` and `canceled` are terminal.
+      enum: [queued, running, done, failed, canceled]
+
+    Version:
+      type: object
+      description: The running ALTO release and the ffmpeg it detected at startup.
+      required: [version, display, dev, ffmpeg]
+      properties:
+        version:
+          type: string
+          description: Bare semver, no leading `v`. `0.0.0` for a build with no release version injected.
+          example: 0.1.0
+        display:
+          type: string
+          description: The badge form — `v0.1.0`, or `dev` for an uninjected build.
+          example: v0.1.0
+        dev:
+          type: boolean
+          description: Whether this is a development build (`version` is the `0.0.0` sentinel).
+        ffmpeg:
+          type: string
+          description: The ffmpeg version detected at startup; empty if ffmpeg was not found.
+          example: 7.1.1
+
+    Error:
+      type: object
+      description: |
+        The failure envelope every JSON endpoint answers with. `code` is the
+        stable contract and is one of the values below; `error` is prose that
+        may change between releases.
+
+        Some codes add context alongside the two required fields — `job_id`,
+        `conflicts`, or the offending names under `invalid`, `duplicate`,
+        `unknown` or `lossy`. The context keys are named per response in the
+        operations above and can never clobber `error` or `code`.
+      required: [error, code]
+      additionalProperties: true
+      properties:
+        error:
+          type: string
+          description: Human-readable message.
+          example: directory not found in index
+        code:
+          type: string
+          description: The stable machine-readable code.
+          enum:
+            - invalid_request
+            - path_forbidden
+            - path_not_found
+            - library_not_found
+            - not_indexed
+            - no_tracks
+            - mixed_directory
+            - no_lossless_tracks
+            - unknown_file
+            - lossy_source_selected
+            - output_dir_not_configured
+            - output_name_conflict
+            - copy_skipped_not_applicable
+            - engine_unavailable
+            - job_already_running
+            - job_already_finished
+            - job_not_found
+            - scan_running
+            - no_cover
+            - internal_error
