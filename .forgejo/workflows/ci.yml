@@ -1,0 +1,70 @@
+# Pull-request and main-branch checks. This is the only non-release workflow:
+# release-cut.yml is a manual button and release.yml fires on a vX.Y.Z tag, so
+# until this file existed nothing verified a change before it landed.
+#
+# GitHub never runs this — it only scans .github/workflows, and the mirror is
+# one-way (Forgejo -> GitHub). Forgejo is where the code review happens.
+#
+# The steps deliberately mirror the Makefile targets a developer runs locally
+# (`make frontend-build`, `make test`, `make lint`), so a green CI and a green
+# working copy mean the same thing.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A newer push to the same ref makes the older run pointless.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Matches the frontend stage of the Dockerfile.
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/frontend/package-lock.json
+
+      # Built before the Go suite, not after: one server test compares base.html
+      # against the real web/static/dist manifest and skips itself when the
+      # bundle is absent, which would silently hide asset drift.
+      - name: Build frontend
+        run: make frontend-build
+
+      - name: Test frontend
+        working-directory: web/frontend
+        run: npm run test
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Test
+        run: make test
+
+      # Scanner probing is concurrent; AGENTS.md calls for the race detector
+      # after touching internal/library. It needs cgo, which the runner image
+      # has and the Alpine dev image had to install separately.
+      - name: Test (race)
+        run: make test-race
+
+      - name: Lint
+        env:
+          # Pinned to the version in the dev image, so CI and `dwe cmd
+          # app.lint.check` report the same findings. .golangci.yml is a v2
+          # config and will not parse under v1.
+          GOLANGCI_LINT_VERSION: v2.12.2
+        run: |
+          set -euo pipefail
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh \
+            | sh -s -- -b "$(go env GOPATH)/bin" "$GOLANGCI_LINT_VERSION"
+          PATH="$(go env GOPATH)/bin:$PATH" make lint
