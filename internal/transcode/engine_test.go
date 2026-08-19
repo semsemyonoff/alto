@@ -61,56 +61,111 @@ func TestCalcPercent(t *testing.T) {
 
 // --- Command building tests ---
 
+// The key lists are spelled out here rather than read from the production
+// variables, so widening what gets stripped has to be a deliberate edit in both
+// places instead of the test asserting the implementation against itself.
+var (
+	wantKeysAnySource = []string{
+		"major_brand", "minor_version", "compatible_brands", "handler_name", "vendor_id",
+	}
+	wantKeysMP4Source = []string{
+		"major_brand", "minor_version", "compatible_brands", "handler_name", "vendor_id",
+		"language", "creation_time",
+	}
+)
+
+// wantCopyMetadataArgs builds the expected metadata block for a key list.
+func wantCopyMetadataArgs(keys []string) []string {
+	args := []string{"-map_metadata", "0", "-map_metadata", "0:s:a:0"}
+	for _, k := range keys {
+		args = append(args, "-metadata", k+"=")
+	}
+	for _, k := range keys {
+		args = append(args, "-metadata:s", k+"=")
+	}
+	return args
+}
+
+// joinArgs flattens argument groups into one expected command line.
+func joinArgs(groups ...[]string) []string {
+	var out []string
+	for _, g := range groups {
+		out = append(out, g...)
+	}
+	return out
+}
+
+// flacHead returns the leading arguments for a FLAC encode of input.
+func flacHead(input string, level string, cover bool) []string {
+	args := []string{"ffmpeg", "-i", input, "-map", "0:a:0"}
+	if cover {
+		args = append(args, "-map", "0:v:0?")
+	}
+	return append(args, "-c:a", "flac", "-compression_level", level)
+}
+
 func TestBuildFLACArgs(t *testing.T) {
-	in, out := "/in/a.mp3", "/out/a.flac"
+	out := "/out/a.flac"
+	const in = "/in/a.mp3"
 	tests := []struct {
 		name     string
+		input    string
 		preset   Preset
 		wantArgs []string
 	}{
 		{
 			name:   "Fast",
+			input:  in,
 			preset: FLACFast,
-			wantArgs: []string{
-				"ffmpeg", "-i", in,
-				"-c:a", "flac", "-compression_level", "0",
-				"-map_metadata", "0", "-c:v", "copy",
-				"-y", out,
-			},
+			wantArgs: joinArgs(
+				flacHead(in, "0", true),
+				wantCopyMetadataArgs(wantKeysAnySource),
+				[]string{"-c:v", "copy", "-y", out},
+			),
 		},
 		{
 			name:   "Balanced",
+			input:  in,
 			preset: FLACBalanced,
-			wantArgs: []string{
-				"ffmpeg", "-i", in,
-				"-c:a", "flac", "-compression_level", "5",
-				"-map_metadata", "0", "-c:v", "copy",
-				"-y", out,
-			},
+			wantArgs: joinArgs(
+				flacHead(in, "5", true),
+				wantCopyMetadataArgs(wantKeysAnySource),
+				[]string{"-c:v", "copy", "-y", out},
+			),
 		},
 		{
 			name:   "Max",
+			input:  in,
 			preset: FLACMax,
-			wantArgs: []string{
-				"ffmpeg", "-i", in,
-				"-c:a", "flac", "-compression_level", "8",
-				"-map_metadata", "0", "-c:v", "copy",
-				"-y", out,
-			},
+			wantArgs: joinArgs(
+				flacHead(in, "8", true),
+				wantCopyMetadataArgs(wantKeysAnySource),
+				[]string{"-c:v", "copy", "-y", out},
+			),
+		},
+		{
+			name:   "MP4 source also strips the ambiguous keys",
+			input:  "/in/a.M4A",
+			preset: FLACBalanced,
+			wantArgs: joinArgs(
+				flacHead("/in/a.M4A", "5", true),
+				wantCopyMetadataArgs(wantKeysMP4Source),
+				[]string{"-c:v", "copy", "-y", out},
+			),
 		},
 		{
 			name:   "No metadata, no cover",
+			input:  in,
 			preset: Preset{Codec: CodecFLAC, CompressionLevel: 5},
-			wantArgs: []string{
-				"ffmpeg", "-i", in,
-				"-c:a", "flac", "-compression_level", "5",
-				"-y", out,
-			},
+			wantArgs: joinArgs(
+				flacHead(in, "5", false),
+				[]string{"-map_metadata", "-1", "-map_chapters", "-1", "-y", out},
+			),
 		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := BuildFLACArgs("ffmpeg", in, out, tc.preset)
+			got := BuildFLACArgs("ffmpeg", tc.input, out, tc.preset)
 			if !sliceEqual(got, tc.wantArgs) {
 				t.Errorf("got  %v\nwant %v", got, tc.wantArgs)
 			}
@@ -118,53 +173,79 @@ func TestBuildFLACArgs(t *testing.T) {
 	}
 }
 
+// opusHead returns the codec arguments every Opus preset shares.
+func opusHead(input, bitrate string) []string {
+	return []string{
+		"ffmpeg", "-i", input,
+		"-map", "0:a:0",
+		"-c:a", "libopus", "-b:a", bitrate,
+		"-vbr", "on", "-compression_level", "10",
+		"-application", "audio",
+	}
+}
+
 func TestBuildOpusArgs(t *testing.T) {
-	in, out := "/in/a.flac", "/out/a.opus"
+	out := "/out/a.opus"
+	const in = "/in/a.flac"
 	tests := []struct {
 		name     string
+		input    string
 		preset   Preset
 		wantArgs []string
 	}{
 		{
 			name:   "Music Balanced",
+			input:  in,
 			preset: OpusMusicBalanced,
-			wantArgs: []string{
-				"ffmpeg", "-i", in,
-				"-c:a", "libopus", "-b:a", "128k",
-				"-vbr", "on", "-compression_level", "10",
-				"-application", "audio",
-				"-map_metadata", "0",
-				"-y", out,
-			},
+			wantArgs: joinArgs(
+				opusHead(in, "128k"),
+				wantCopyMetadataArgs(wantKeysAnySource),
+				[]string{"-y", out},
+			),
 		},
 		{
 			name:   "Music High",
+			input:  in,
 			preset: OpusMusicHigh,
-			wantArgs: []string{
-				"ffmpeg", "-i", in,
-				"-c:a", "libopus", "-b:a", "160k",
-				"-vbr", "on", "-compression_level", "10",
-				"-application", "audio",
-				"-map_metadata", "0",
-				"-y", out,
-			},
+			wantArgs: joinArgs(
+				opusHead(in, "160k"),
+				wantCopyMetadataArgs(wantKeysAnySource),
+				[]string{"-y", out},
+			),
 		},
 		{
 			name:   "Archive Lossy",
+			input:  in,
 			preset: OpusArchiveLossy,
-			wantArgs: []string{
-				"ffmpeg", "-i", in,
-				"-c:a", "libopus", "-b:a", "192k",
-				"-vbr", "on", "-compression_level", "10",
-				"-application", "audio",
-				"-map_metadata", "0",
-				"-y", out,
-			},
+			wantArgs: joinArgs(
+				opusHead(in, "192k"),
+				wantCopyMetadataArgs(wantKeysAnySource),
+				[]string{"-y", out},
+			),
+		},
+		{
+			name:   "MP4 source also strips the ambiguous keys",
+			input:  "/in/a.m4a",
+			preset: OpusMusicHigh,
+			wantArgs: joinArgs(
+				opusHead("/in/a.m4a", "160k"),
+				wantCopyMetadataArgs(wantKeysMP4Source),
+				[]string{"-y", out},
+			),
+		},
+		{
+			name:   "No metadata",
+			input:  in,
+			preset: Preset{Codec: CodecOpus, CompressionLevel: 10, Bitrate: "128k"},
+			wantArgs: joinArgs(
+				opusHead(in, "128k"),
+				[]string{"-map_metadata", "-1", "-map_chapters", "-1", "-y", out},
+			),
 		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := BuildOpusArgs("ffmpeg", in, out, tc.preset)
+			got := BuildOpusArgs("ffmpeg", tc.input, out, tc.preset)
 			if !sliceEqual(got, tc.wantArgs) {
 				t.Errorf("got  %v\nwant %v", got, tc.wantArgs)
 			}

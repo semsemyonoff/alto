@@ -1265,7 +1265,12 @@ components:
           example: 192k
         copy_metadata:
           type: boolean
-          description: Custom override; defaults to true.
+          description: |
+            Custom override; defaults to true. `false` writes the output with no
+            source tags and no source chapters. When true, container-structural
+            fields (`major_brand`, `handler_name`, and for MP4 sources also
+            `language` and `creation_time`) are stripped — only real tags are
+            carried over.
         copy_cover:
           type: boolean
           description: Custom override; defaults to true for FLAC and false for Opus.

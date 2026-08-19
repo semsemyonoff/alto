@@ -407,17 +407,87 @@ func makeProgressFn(fi FileInfo, fileIdx, totalFiles int, progress chan<- Progre
 	}
 }
 
+// containerMetadataKeys lists the metadata keys ffmpeg lifts out of container
+// structure rather than out of user tags: MP4/MOV file-type and track-header
+// fields. No tagger writes them, so they are stripped whatever the source is.
+var containerMetadataKeys = []string{
+	"major_brand", "minor_version", "compatible_brands",
+	"handler_name", "vendor_id",
+}
+
+// mp4AmbiguousMetadataKeys are structural in an MP4 family container but are
+// plausible user tags anywhere else — a Vorbis comment may legitimately carry
+// LANGUAGE or CREATION_TIME. Stripping them unconditionally would silently drop
+// real tags, and in OutputReplace mode the original is already gone by then, so
+// they are stripped only for the containers that generate them.
+var mp4AmbiguousMetadataKeys = []string{"language", "creation_time"}
+
+// mp4SourceExtensions are the audio extensions carried by an MP4 family
+// container. Raw .aac (ADTS) has no boxes and is deliberately absent.
+var mp4SourceExtensions = map[string]bool{
+	".m4a": true, ".m4b": true, ".mp4": true, ".mov": true, ".alac": true,
+}
+
+// metadataArgs returns the ffmpeg metadata arguments for the preset. The input
+// path is read for its extension only, to decide whether the ambiguous keys are
+// structural for this source.
+//
+// -map_metadata 0 is ffmpeg's own default, so omitting it does not disable the
+// copy — only -map_metadata -1 does, and chapters need -map_chapters -1 of their
+// own: they have a separate automatic mapping and otherwise survive into an Opus
+// output as unnamed marks.
+//
+// Containers disagree on where user tags live: MP4, native FLAC, MP3 and
+// Matroska keep them on the format, Ogg (Vorbis, Opus, FLAC-in-Ogg) on the
+// stream. The two mappings accumulate rather than override, so lifting the audio
+// stream's tags onto the output's global dict as well is what carries an Ogg
+// source's tags into a native FLAC output — that muxer writes global metadata
+// only, and ffmpeg does not promote stream metadata on its own. It is a no-op
+// for an Ogg output, whose muxer already sees both levels.
+//
+// Each container key is then unset at both levels — after the mappings, so the
+// unset wins. MP4 keeps major_brand/minor_version/compatible_brands on the
+// format and handler_name/language/creation_time on the audio stream, and a
+// global unset alone leaves the stream copy intact, which the Ogg muxer writes
+// out as lowercase Vorbis comments.
+func metadataArgs(preset Preset, input string) []string {
+	if !preset.CopyMetadata {
+		return []string{"-map_metadata", "-1", "-map_chapters", "-1"}
+	}
+	keys := containerMetadataKeys
+	if mp4SourceExtensions[strings.ToLower(filepath.Ext(input))] {
+		keys = append(append([]string{}, keys...), mp4AmbiguousMetadataKeys...)
+	}
+	args := make([]string, 0, 4+len(keys)*4)
+	args = append(args, "-map_metadata", "0", "-map_metadata", "0:s:a:0")
+	for _, k := range keys {
+		args = append(args, "-metadata", k+"=")
+	}
+	for _, k := range keys {
+		args = append(args, "-metadata:s", k+"=")
+	}
+	return args
+}
+
 // BuildFLACArgs returns the ffmpeg arguments for FLAC transcoding.
 // Output verification is performed separately via ffprobe after encoding.
+//
+// The audio stream is mapped explicitly: ffmpeg's automatic selection picks the
+// "best" audio stream, which on a multi-stream source need not be a:0 — and
+// metadataArgs reads its tags from a:0, so the two would disagree. a:0 is also
+// what library.parseFFProbeOutput indexes and the UI shows. An explicit -map
+// disables automatic selection entirely, so cover art needs mapping of its own.
 func BuildFLACArgs(ffmpegBin, input, output string, preset Preset) []string {
-	args := []string{
-		ffmpegBin, "-i", input,
+	args := []string{ffmpegBin, "-i", input, "-map", "0:a:0"}
+	if preset.CopyCover {
+		// The trailing '?' keeps a source without cover art from failing.
+		args = append(args, "-map", "0:v:0?")
+	}
+	args = append(args,
 		"-c:a", "flac",
 		"-compression_level", strconv.Itoa(preset.CompressionLevel),
-	}
-	if preset.CopyMetadata {
-		args = append(args, "-map_metadata", "0")
-	}
+	)
+	args = append(args, metadataArgs(preset, input)...)
 	if preset.CopyCover {
 		args = append(args, "-c:v", "copy")
 	}
@@ -427,18 +497,18 @@ func BuildFLACArgs(ffmpegBin, input, output string, preset Preset) []string {
 }
 
 // BuildOpusArgs returns the ffmpeg arguments for Opus transcoding.
+// See BuildFLACArgs for why the audio stream is mapped explicitly.
 func BuildOpusArgs(ffmpegBin, input, output string, preset Preset) []string {
 	args := []string{
 		ffmpegBin, "-i", input,
+		"-map", "0:a:0",
 		"-c:a", "libopus",
 		"-b:a", preset.Bitrate,
 		"-vbr", "on",
 		"-compression_level", strconv.Itoa(preset.CompressionLevel),
 		"-application", "audio",
 	}
-	if preset.CopyMetadata {
-		args = append(args, "-map_metadata", "0")
-	}
+	args = append(args, metadataArgs(preset, input)...)
 	// Opus (Ogg) containers do not support embedded video streams; cover art
 	// cannot be copied via -c:v copy for this codec.
 	args = append(args, preset.ExtraArgs...)

@@ -10,6 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 <!-- Write notes for the next release here. "Cut release" promotes this
      section to ## [X.Y.Z] - <date> and uses it as the release body. -->
 
+### Fixed
+- **Metadata handling on transcode.** Container fields (`major_brand`,
+  `handler_name`, …) no longer leak into Opus and FLAC tags, Ogg sources keep
+  their tags when transcoded to FLAC, and the encoded audio and the copied tags
+  now come from the same stream.
+- `copy_metadata: false` now really drops source metadata and chapters; it was a
+  no-op.
+
 ## [0.2.0] - 2026-08-10
 
 **Breaking:** JSON endpoints now return `{"error", "code", …}` instead of
